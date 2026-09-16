@@ -2,14 +2,22 @@
   "name": "zolt",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "src/app/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "eslint src/** /*.ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "dev": "nodemon --exec tsx src/app/server.ts",
+    "build": "tsc",
+    "start": "dist/app/server.js",
+    "tests": "vitest run",
+    "db:create-migration": "node-pg-migrate create",
+    "db:migrate": "tsx ./node_modules/node-pg-migrate/bin/node-pg-migrate.js up",
+    "db:migrate:down": "tsx ./node_modules/node-pg-migrate/bin/node-pg-migrate.js down"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.5.1",
@@ -28,6 +36,10 @@
   },
   "dependencies": {
     "bullmq": "^6.3.6",
+    "dotenv": "^17.4.2",
+    "ioredis": "^6.0.0",
+    "node-pg-migrate": "^9.0.0",
+    "nodemon": "^3.1.14",
     "pino": "^10.3.1",
     "zod": "^4.6.5"
   }
