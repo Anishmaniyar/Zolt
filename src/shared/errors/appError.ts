@@ -4,7 +4,7 @@ interface errorType {
   isOperational: boolean;
 }
 
-class AppError extends Error implements errorType {
+export default class AppError extends Error implements errorType {
   statusCode: number;
   status: string;
   isOperational: boolean;
