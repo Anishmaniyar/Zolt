@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import * as JobService from './jobs.service.js';
 import { string } from 'zod';
 import { GetJobsQuery } from './jobs.types.js';
+import * as ExecutionService from '../executions/execution.service.js';
 
 export const createJobController = asyncHandler(
   async (req: Request, res: Response, next: NextFunction) => {
@@ -50,6 +51,18 @@ export const cancelJobController = asyncHandler(async (req: Request, res: Respon
 
   return res.status(200).json({
     message: 'Job cancelled successfully',
+    status: 'success',
+    data: result,
+  });
+});
+
+export const getJobExecutionsController = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const result = await ExecutionService.getJobExecutionsService({ id: id as string });
+
+  return res.status(200).json({
+    message: 'Job executions data fetched successfully',
     status: 'success',
     data: result,
   });

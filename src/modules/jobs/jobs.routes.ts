@@ -25,4 +25,10 @@ jobRouter.post(
   JobController.cancelJobController,
 );
 
+jobRouter.get(
+  '/jobs/:id/executions',
+  validateRequest(JobSchema.getJobExecutionsSchema),
+  JobController.getJobExecutionsController,
+);
+
 export default jobRouter;

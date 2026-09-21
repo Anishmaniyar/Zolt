@@ -59,3 +59,17 @@ export const successExecution = async (executionId: string) => {
 
   return result.rows[0];
 };
+
+export const getExecutionsByJobId = async (jobId: string) => {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM executions
+      WHERE job_id = $1
+      ORDER BY created_at ASC;
+    `,
+    [jobId],
+  );
+
+  return result.rows;
+};

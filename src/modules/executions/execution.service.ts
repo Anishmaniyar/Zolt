@@ -60,3 +60,15 @@ export const createNewExecution = async (job: JobForExecution) => {
     throw error;
   }
 };
+
+export const getJobExecutionsService = async (data: { id: string }) => {
+  const job = await JobRepository.getJobById(data.id);
+
+  if (!job) {
+    throw new AppError('Error finding the job', 404);
+  }
+
+  const executions = await ExecutionRepository.getExecutionsByJobId(data.id);
+
+  return executions;
+};

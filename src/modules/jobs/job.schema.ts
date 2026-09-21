@@ -59,3 +59,9 @@ export const cancelJobByIdSchema = z.object({
     id: z.uuid(),
   }),
 });
+
+export const getJobExecutionsSchema = z.object({
+  params: z.object({
+    id: z.uuid(),
+  }),
+});
