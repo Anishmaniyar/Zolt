@@ -1,0 +1,16 @@
+name: Zolt CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show node version
+        run: node --version
