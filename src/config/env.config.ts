@@ -15,6 +15,12 @@ const envSchema = z.object({
   WORKER_ID: z.string().default('unknow-worker'),
 
   GLOBAL_CONCURRENCY: z.coerce.number().min(1).default(6),
+
+  SCHEDULER_POOL_INTERVAL: z.coerce.number().min(5000).default(15000),
+
+  SCHEDULER_BATCH_SIZE: z.coerce.number().min(5).default(5),
+
+  SCHEDULER_ID: z.string().default('unknown-scheduler'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -47,5 +53,11 @@ export const config = Object.freeze({
     concurrency: env.WORKER_CONCURRENCY,
     id: env.WORKER_ID,
     globalConcurrency: env.GLOBAL_CONCURRENCY,
+  }),
+
+  scheduler: Object.freeze({
+    intervalSize: env.SCHEDULER_POOL_INTERVAL,
+    batch: env.SCHEDULER_BATCH_SIZE,
+    id: env.SCHEDULER_ID,
   }),
 });
