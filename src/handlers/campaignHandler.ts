@@ -1,6 +1,6 @@
-export const campaignHandler = async (job) => {
+export const campaignHandler = async (payload: any) => {
   console.log('CAMPAIGN JOB STARTED');
-  console.log('Data: ', job.data);
+  console.log('Data: ', payload);
 
   await new Promise((resolve) => setTimeout(resolve, 5000));
 

@@ -9,6 +9,12 @@ const envSchema = z.object({
   REDIS_URL: z.url(),
 
   DATABASE_URL: z.url(),
+
+  WORKER_CONCURRENCY: z.coerce.number().min(1).default(5),
+
+  WORKER_ID: z.string().default('unknow-worker'),
+
+  GLOBAL_CONCURRENCY: z.coerce.number().min(1).default(6),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -35,5 +41,11 @@ export const config = Object.freeze({
 
   database: Object.freeze({
     url: env.DATABASE_URL,
+  }),
+
+  worker: Object.freeze({
+    concurrency: env.WORKER_CONCURRENCY,
+    id: env.WORKER_ID,
+    globalConcurrency: env.GLOBAL_CONCURRENCY,
   }),
 });

@@ -3,17 +3,25 @@ import { redis } from '../infrastructure/redis/redis.js';
 import { getJobById } from '../modules/jobs/jobs.repository.js';
 import * as ExecutionService from '../modules/executions/execution.service.js';
 import AppError from '../shared/errors/appError.js';
-import { success } from 'zod';
+import { config } from '../config/env.config.js';
 
-const workerRedisConnection = redis.duplicate({
+export const workerRedisConnection = redis.duplicate({
   maxRetriesPerRequest: null,
 });
+
+// a simple utility to simulate a heavy workload
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const worker = new Worker(
   'jobs',
   async (job) => {
+    console.log(`📡 [${config.worker.id}] initialized (Concurrency: ${config.worker.concurrency})`);
+
+    await delay(5000);
+
     switch (job.name) {
       case 'execute-job': {
+        console.log(`⏱️  [${config.worker.id}] STARTing Job #${job.id} - Type: ${job.name}`);
         const { jobId } = job.data;
 
         if (!jobId) {
@@ -46,10 +54,13 @@ const worker = new Worker(
       default:
         throw new AppError(`Unknown queue job type: ${job.name}`, 400);
     }
+
+    // log completion
+    console.log(`✅ [${config.worker.id}] ENDed Job #${job.id}`);
   },
   {
     connection: workerRedisConnection,
-    concurrency: 5,
+    concurrency: config.worker.concurrency,
   },
 );
 

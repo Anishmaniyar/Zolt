@@ -4,7 +4,7 @@ dotenv.config();
 import express from 'express';
 import { globalErrorHandler } from '../middleware/error.middleware.js';
 import { startScheduler } from '../modules/scheduler/scheduler.service.js';
-import '../workers/worker.js';
+//import '../workers/worker.js';
 
 import rootRouter from './routes.js';
 
