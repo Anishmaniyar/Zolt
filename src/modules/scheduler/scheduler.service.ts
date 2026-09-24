@@ -2,6 +2,7 @@ import * as SchedulerRepository from './scheduler.repository.js';
 import { enqueueJobs } from '../../infrastructure/queue/queue.js';
 import { config } from '../../config/env.config.js';
 
+// fetches jobs from db
 const processDueJobs = async () => {
   try {
     console.log('Scheduler tick');
