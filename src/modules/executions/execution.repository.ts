@@ -4,25 +4,22 @@ export interface JobForExecution {
   id: string;
 }
 
-export const newExecution = async (data: JobForExecution) => {
+export const newExecution = async (job: JobForExecution, attempt: number) => {
   const result = await pool.query(
     `
       INSERT INTO executions (
         job_id,
+        attempt,
         status,
         started_at
       )
-      VALUES (
-        $1,
-        'RUNNING',
-        NOW()
-      )
-      RETURNING *;
+      VALUES ($1, $2, 'RUNNING', NOW())
+      RETURNING *
     `,
-    [data.id],
+    [job.id, attempt],
   );
 
-  return result.rows[0];
+  return result.rows[0] ?? null;
 };
 
 export const failedExecution = async (executionId: string, errorMessage: string) => {
@@ -60,16 +57,28 @@ export const successExecution = async (executionId: string) => {
   return result.rows[0];
 };
 
-export const getExecutionsByJobId = async (jobId: string) => {
+export const getJobById = async (id: string): Promise<JobForExecution | null> => {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM jobs
+      WHERE id = $1
+    `,
+    [id],
+  );
+
+  return result.rows[0] ?? null;
+};
+
+export const getExecutionById = async (executionId: string) => {
   const result = await pool.query(
     `
       SELECT *
       FROM executions
-      WHERE job_id = $1
-      ORDER BY created_at ASC;
+      WHERE id = $1
     `,
-    [jobId],
+    [executionId],
   );
 
-  return result.rows;
+  return result.rows[0] ?? null;
 };

@@ -2,6 +2,7 @@ import { handlerRegistry } from '../../handlers/handler.registry.js';
 import AppError from '../../shared/errors/appError.js';
 import * as ExecutionRepository from './execution.repository.js';
 import * as JobRepository from '../jobs/jobs.repository.js';
+import { enqueueExecution } from '../../infrastructure/queue/queue.js';
 
 export type JobType = 'SEND_EMAIL' | 'CREATE_CAMPAIGN';
 
@@ -15,16 +16,44 @@ export interface JobForExecution {
   max_attempts: number;
 }
 
+export interface ExecutionInterface {
+  id: string;
+  job_id: string;
+  attempt: number;
+  status: string;
+  started_at: Date | null;
+  completed_at: Date | null;
+  error: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export const createNewExecution = async (job: JobForExecution) => {
-  // const create new execution
-  const execution = await ExecutionRepository.newExecution(job);
+  const execution = await ExecutionRepository.newExecution(job, 1);
 
   if (!execution) {
     throw new AppError('Error generating the execution', 500);
   }
 
-  // resolve handler
-  const handler = handlerRegistry[job.type];
+  await executeExistingExecution(execution.id);
+
+  return true;
+};
+
+export const executeExistingExecution = async (executionId: string) => {
+  const execution = await ExecutionRepository.getExecutionById(executionId);
+
+  if (!execution) {
+    throw new AppError(`Execution ${executionId} not found`, 404);
+  }
+
+  const job = await JobRepository.getJobById(execution.job_id);
+
+  if (!job) {
+    throw new AppError(`Job ${execution.job_id} not found`, 404);
+  }
+
+  const handler = handlerRegistry[job.type as JobType];
 
   if (!handler) {
     await ExecutionRepository.failedExecution(
@@ -32,32 +61,45 @@ export const createNewExecution = async (job: JobForExecution) => {
       `No handler registered for type: ${job.type}`,
     );
 
-    // The Job itself also failed.
     await JobRepository.failedJob(job.id);
 
     throw new AppError(`No handler registered for type: ${job.type}`, 500);
   }
 
-  // execute handler
   try {
     await handler(job.payload ?? {});
 
     await ExecutionRepository.successExecution(execution.id);
-
     await JobRepository.successJob(job.id);
 
     return true;
   } catch (error) {
-    console.error('Error running the job', 400);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown execution error';
 
-    await ExecutionRepository.failedExecution(
-      execution.id,
-      error instanceof Error ? error.message : 'Unknown execution error',
-    );
+    console.error(`Error running execution ${execution.id}:`, error);
 
+    // Current execution failed.
+    await ExecutionRepository.failedExecution(execution.id, errorMessage);
+
+    // Retry if attempts remain.
+    if (execution.attempt < job.max_attempts) {
+      const nextAttempt = execution.attempt + 1;
+
+      const newExecution = await ExecutionRepository.newExecution(job, nextAttempt);
+
+      if (!newExecution) {
+        throw new AppError('Error generating the retry execution', 500);
+      }
+
+      await enqueueExecution(newExecution.id);
+
+      return false;
+    }
+
+    // No attempts remaining.
     await JobRepository.failedJob(job.id);
 
-    throw error;
+    return false;
   }
 };
 
@@ -68,7 +110,5 @@ export const getJobExecutionsService = async (data: { id: string }) => {
     throw new AppError('Error finding the job', 404);
   }
 
-  const executions = await ExecutionRepository.getExecutionsByJobId(data.id);
-
-  return executions;
+  return await ExecutionRepository.getJobById(data.id);
 };
