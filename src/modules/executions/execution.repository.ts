@@ -57,19 +57,6 @@ export const successExecution = async (executionId: string) => {
   return result.rows[0];
 };
 
-export const getJobById = async (id: string): Promise<JobForExecution | null> => {
-  const result = await pool.query(
-    `
-      SELECT *
-      FROM jobs
-      WHERE id = $1
-    `,
-    [id],
-  );
-
-  return result.rows[0] ?? null;
-};
-
 export const getExecutionById = async (executionId: string) => {
   const result = await pool.query(
     `
@@ -81,4 +68,18 @@ export const getExecutionById = async (executionId: string) => {
   );
 
   return result.rows[0] ?? null;
+};
+
+export const getExecutionsByJobId = async (jobId: string) => {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM executions
+      WHERE job_id = $1
+      ORDER BY attempt ASC
+    `,
+    [jobId],
+  );
+
+  return result.rows;
 };

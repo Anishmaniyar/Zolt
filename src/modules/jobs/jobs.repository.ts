@@ -10,33 +10,72 @@ export interface CreateJobData {
   max_attempts: number;
 }
 
-export const createJob = async (data: CreateJobData) => {
-  const result = await pool.query(
-    `
-      INSERT INTO jobs (
-        title,
-        type,
-        schedule_type,
-        payload,
-        run_at,
-        max_attempts
-      )
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *;
-    `,
-    [
-      data.title,
-      data.type,
-      data.schedule_type,
-      data.payload ?? null,
-      data.run_at,
-      data.max_attempts,
-    ],
-  );
+export interface CreateJobWithIdempotencyData {
+  job: CreateJobData;
+  idempotencyKey: string;
+}
 
-  return result.rows[0];
+/**
+ * Creates the job and its idempotency record in one PostgreSQL transaction.
+ * If either insert fails, both are rolled back.
+ */
+export const createJobWithIdempotency = async (data: CreateJobWithIdempotencyData) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const jobResult = await client.query(
+      `
+        INSERT INTO jobs (
+          title,
+          type,
+          schedule_type,
+          payload,
+          run_at,
+          max_attempts
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `,
+      [
+        data.job.title,
+        data.job.type,
+        data.job.schedule_type,
+        data.job.payload ?? null,
+        data.job.run_at,
+        data.job.max_attempts,
+      ],
+    );
+
+    const job = jobResult.rows[0];
+
+    await client.query(
+      `
+        INSERT INTO idempotency_records (
+          job_id,
+          idempotency_key
+        )
+        VALUES ($1, $2)
+      `,
+      [job.id, data.idempotencyKey],
+    );
+
+    await client.query('COMMIT');
+
+    return job;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
+/**
+ * Fetches a job by id. The idempotency key is resolved separately through
+ * IdempotencyRepository.getByJobId(), so this stays a plain jobs lookup.
+ */
 export const getJobById = async (id: string) => {
   const result = await pool.query(
     `
@@ -49,7 +88,6 @@ export const getJobById = async (id: string) => {
 
   return result.rows[0];
 };
-
 export const getJobs = async (query: GetJobsQuery) => {
   // 1. Fall back to safe defaults if parameters are missing
   const page = query.page || 1;

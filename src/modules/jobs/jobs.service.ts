@@ -1,4 +1,4 @@
-import { da, id } from 'zod/locales';
+import crypto from 'node:crypto';
 import AppError from '../../shared/errors/appError.js';
 import * as JobRepository from './jobs.repository.js';
 import type { GetJobsQuery } from './jobs.types.js';
@@ -32,13 +32,19 @@ export const createJobService = async (data: {
     max_attempts: data.max_attempts,
   };
 
-  const createJobRecord = await JobRepository.createJob(createJobData);
+  // IDENTITY OF THE LOGICAL OPERATION
+  const idempotencyKey = crypto.randomUUID();
 
-  if (!createJobRecord) {
+  const job = await JobRepository.createJobWithIdempotency({
+    job: createJobData,
+    idempotencyKey,
+  });
+
+  if (!job) {
     throw new AppError('Error creating the job', 500);
   }
 
-  return createJobRecord;
+  return job;
 };
 
 export const getJobByIdService = async (data: { id: string }) => {

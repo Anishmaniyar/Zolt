@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "bullmq": "^6.3.6",
+    "crypto": "^1.0.1",
     "dotenv": "^17.4.2",
     "ioredis": "^6.0.0",
     "node-pg-migrate": "^9.0.0",

@@ -2,6 +2,7 @@ import { handlerRegistry } from '../../handlers/handler.registry.js';
 import AppError from '../../shared/errors/appError.js';
 import * as ExecutionRepository from './execution.repository.js';
 import * as JobRepository from '../jobs/jobs.repository.js';
+import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
 import { enqueueExecution } from '../../infrastructure/queue/queue.js';
 
 export type JobType = 'SEND_EMAIL' | 'CREATE_CAMPAIGN';
@@ -53,6 +54,31 @@ export const executeExistingExecution = async (executionId: string) => {
     throw new AppError(`Job ${execution.job_id} not found`, 404);
   }
 
+  // IDENTITY OF THE LOGICAL OPERATION
+  const idempotencyRecord = await IdempotencyRepository.getByJobId(job.id);
+
+  if (!idempotencyRecord) {
+    throw new AppError(`Idempotency record not found for job ${job.id}`, 500);
+  }
+
+  const idempotencyKey = idempotencyRecord.idempotency_key;
+
+  // ATOMIC CLAIM
+  const claimResult = await IdempotencyRepository.claimIdempotency(idempotencyKey);
+
+  // Another worker already finished this logical operation.
+  if (claimResult === 'ALREADY_COMPLETED') {
+    await ExecutionRepository.successExecution(execution.id);
+
+    return true;
+  }
+
+  // Another worker is currently running this logical operation.
+  if (claimResult === 'ALREADY_PROCESSING') {
+    return false;
+  }
+
+  // ONLY CLAIMED REACHES THE HANDLER
   const handler = handlerRegistry[job.type as JobType];
 
   if (!handler) {
@@ -69,6 +95,8 @@ export const executeExistingExecution = async (executionId: string) => {
   try {
     await handler(job.payload ?? {});
 
+    await IdempotencyRepository.completeIdempotency(idempotencyKey);
+
     await ExecutionRepository.successExecution(execution.id);
     await JobRepository.successJob(job.id);
 
@@ -83,6 +111,9 @@ export const executeExistingExecution = async (executionId: string) => {
 
     // Retry if attempts remain.
     if (execution.attempt < job.max_attempts) {
+      // Reset the claim so the retry can re-acquire it.
+      await IdempotencyRepository.resetToPending(idempotencyKey);
+
       const nextAttempt = execution.attempt + 1;
 
       const newExecution = await ExecutionRepository.newExecution(job, nextAttempt);
@@ -110,5 +141,5 @@ export const getJobExecutionsService = async (data: { id: string }) => {
     throw new AppError('Error finding the job', 404);
   }
 
-  return await ExecutionRepository.getJobById(data.id);
+  return await ExecutionRepository.getExecutionsByJobId(data.id);
 };
