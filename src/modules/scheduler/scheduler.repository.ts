@@ -1,4 +1,5 @@
 import { pool } from '../../infrastructure/database/pool.js';
+import * as OutboxRepository from '../outbox/outbox.repository.js';
 
 // export const findDueJobs = async () => {
 //   const result = await pool.query(
@@ -51,6 +52,10 @@ export const processJobTransaction = async (batch: number) => {
 
     const result = await client.query({ text: claimJobsQuery, values: [batch] });
 
+    for (const job of result.rows) {
+      await OutboxRepository.createJobOutbox(client, job.id);
+    }
+
     await client.query('COMMIT');
     console.log(`Transaction committed! Claimed ${result.rows.length} jobs.`);
 
@@ -86,6 +91,10 @@ export const processExecutionTransactions = async (batch: number) => {
       RETURNING *
     `;
     const result = await client.query({ text: claimExecutionQuery, values: [batch] });
+
+    for (const execution of result.rows) {
+      await OutboxRepository.createExecutionOutbox(client, execution.id);
+    }
 
     await client.query('COMMIT');
     console.log(`Transaction committed! Claimed ${result.rows.length} Executions.`);
