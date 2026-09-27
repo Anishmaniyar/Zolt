@@ -4,11 +4,11 @@ import { config } from '../../config/env.config.js';
 
 export const jobQueue = new Queue('jobs', {
   connection: redis,
-  defaultJobOptions: {
-    backoff: { type: 'exponential', delay: 2000, jitter: 0.5 },
-    removeOnComplete: false,
-    removeOnFail: false,
-  },
+  // defaultJobOptions: {
+  //   backoff: { type: 'exponential', delay: 2000, jitter: 0.5 },
+  //   removeOnComplete: false,
+  //   removeOnFail: false,
+  // },
 });
 
 export async function enqueueJobs(jobs: Array<{ id: string }>) {
@@ -22,10 +22,21 @@ export async function enqueueJobs(jobs: Array<{ id: string }>) {
   );
 }
 
-export async function enqueueExecution(executionId: string) {
-  return await jobQueue.add('execute-execution', { executionId });
+export async function enqueueExecutions(executions: Array<{ id: string }>) {
+  return await jobQueue.addBulk(
+    executions.map((execution) => ({
+      name: 'execute-execution',
+      data: {
+        executionId: execution.id,
+      },
+    })),
+  );
 }
 
 export async function configureQueue() {
   await jobQueue.setGlobalConcurrency(config.worker.globalConcurrency);
+}
+
+export async function closeQueue() {
+  await jobQueue.close();
 }

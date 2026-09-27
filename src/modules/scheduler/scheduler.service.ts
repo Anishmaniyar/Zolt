@@ -1,29 +1,13 @@
 import * as SchedulerRepository from './scheduler.repository.js';
-import { enqueueJobs } from '../../infrastructure/queue/queue.js';
+import { enqueueJobs, enqueueExecutions } from '../../infrastructure/queue/queue.js';
 import { config } from '../../config/env.config.js';
 
 // fetches jobs from db
 const processDueJobs = async () => {
   try {
-    console.log('Scheduler tick');
+    console.log('Scheduler Job tick');
 
     console.log(`🔍 [${config.scheduler.id}] checking database for due jobs...`);
-
-    // const dueJobs = await SchedulerRepository.findDueJobs();
-
-    // if (dueJobs.length === 0) {
-    //   return;
-    // }
-
-    // console.log('Due jobs:', dueJobs.length);
-
-    // const jobIds = dueJobs.map((job) => job.id);
-
-    // const claimedJobs = await SchedulerRepository.ClaimJobs(jobIds);
-
-    // if (claimedJobs.length === 0) return;
-
-    // console.log('Claimed jobs:', claimedJobs.length);
 
     const fetchAndClaimJobs = await SchedulerRepository.processJobTransaction(
       config.scheduler.batch,
@@ -42,6 +26,32 @@ const processDueJobs = async () => {
   }
 };
 
+// fetch executions from db
+const processDueExecutions = async () => {
+  try {
+    console.log('Scheduler Execution tick');
+
+    console.log(`🔍 [${config.scheduler.id}] checking database for due executions...`);
+
+    const fetchAndClaimExecutions = await SchedulerRepository.processExecutionTransactions(
+      config.scheduler.batch,
+    );
+
+    if (fetchAndClaimExecutions.length === 0) return;
+
+    console.log(
+      `🎯 [${config.scheduler.id}] ATOMICALLY CLAIMED: ${fetchAndClaimExecutions.length} executions.`,
+    );
+
+    // add the jobs to queue
+    await enqueueExecutions(fetchAndClaimExecutions);
+  } catch (error) {
+    console.error(`❌ [${config.scheduler.id}] Scheduler tick failed:`, error);
+  }
+};
+
+let schedulerInterval: NodeJS.Timeout | undefined;
+
 export const startScheduler = () => {
   console.log(
     `⏱️  Scheduler [${config.scheduler.id}] activated. Polling every ${config.scheduler.intervalSize}ms.`,
@@ -49,7 +59,22 @@ export const startScheduler = () => {
 
   // Run once immediately instead of waiting 15 seconds.
   processDueJobs();
+  processDueExecutions();
 
   // Then continue checking every 15 seconds.
-  setInterval(processDueJobs, config.scheduler.intervalSize);
+  schedulerInterval = setInterval(() => {
+    void processDueJobs();
+    void processDueExecutions();
+  }, config.scheduler.intervalSize);
+};
+
+export const stopScheduler = () => {
+  if (!schedulerInterval) {
+    console.log('Scheduler is not running.');
+    return;
+  }
+
+  console.log('Stopping scheduler...');
+  clearInterval(schedulerInterval);
+  schedulerInterval = undefined;
 };

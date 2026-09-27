@@ -1,22 +1,19 @@
 import { pool } from '../../infrastructure/database/pool.js';
 
-export interface JobForExecution {
-  id: string;
-}
-
-export const newExecution = async (job: JobForExecution, attempt: number) => {
+export const newExecution = async (id: string, attempt: number, retry_at: Date | null) => {
   const result = await pool.query(
     `
       INSERT INTO executions (
         job_id,
         attempt,
         status,
-        started_at
+        started_at,
+        retry_at
       )
-      VALUES ($1, $2, 'RUNNING', NOW())
+      VALUES ($1, $2, 'SCHEDULED', NULL, $3)
       RETURNING *
     `,
-    [job.id, attempt],
+    [id, attempt, retry_at],
   );
 
   return result.rows[0] ?? null;
@@ -82,4 +79,21 @@ export const getExecutionsByJobId = async (jobId: string) => {
   );
 
   return result.rows;
+};
+
+export const startExecution = async (executionId: string) => {
+  const result = await pool.query(
+    `
+      UPDATE executions
+      SET
+        status = 'RUNNING',
+        started_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [executionId],
+  );
+
+  return result.rows[0];
 };

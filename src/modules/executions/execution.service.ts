@@ -3,7 +3,7 @@ import AppError from '../../shared/errors/appError.js';
 import * as ExecutionRepository from './execution.repository.js';
 import * as JobRepository from '../jobs/jobs.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
-import { enqueueExecution } from '../../infrastructure/queue/queue.js';
+import { calculateRetryAt } from '../../utils/retry.utils.js';
 
 export type JobType = 'SEND_EMAIL' | 'CREATE_CAMPAIGN';
 
@@ -30,7 +30,7 @@ export interface ExecutionInterface {
 }
 
 export const createNewExecution = async (job: JobForExecution) => {
-  const execution = await ExecutionRepository.newExecution(job, 1);
+  const execution = await ExecutionRepository.newExecution(job.id, 1, null);
 
   if (!execution) {
     throw new AppError('Error generating the execution', 500);
@@ -78,6 +78,8 @@ export const executeExistingExecution = async (executionId: string) => {
     return false;
   }
 
+  await ExecutionRepository.startExecution(execution.id);
+
   // ONLY CLAIMED REACHES THE HANDLER
   const handler = handlerRegistry[job.type as JobType];
 
@@ -115,14 +117,15 @@ export const executeExistingExecution = async (executionId: string) => {
       await IdempotencyRepository.resetToPending(idempotencyKey);
 
       const nextAttempt = execution.attempt + 1;
+      const retryNumber = nextAttempt - 1;
 
-      const newExecution = await ExecutionRepository.newExecution(job, nextAttempt);
+      const retryAt = calculateRetryAt(retryNumber);
+
+      const newExecution = await ExecutionRepository.newExecution(job, nextAttempt, retryAt);
 
       if (!newExecution) {
         throw new AppError('Error generating the retry execution', 500);
       }
-
-      await enqueueExecution(newExecution.id);
 
       return false;
     }

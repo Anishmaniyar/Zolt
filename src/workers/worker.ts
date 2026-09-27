@@ -64,6 +64,19 @@ const worker = new Worker(
   },
 );
 
+async function gracefulShutdown(signal: string) {
+  console.log(`${signal} received. Shutting down worker ...`);
+
+  await worker.close();
+  await workerRedisConnection.quit();
+
+  console.log('Worker shutdown complete');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 worker.on('completed', (job) => console.log(`Job ${job.id} finished successfully`));
 
 worker.on('failed', (job, err) => console.error(`Job ${job?.id} failed:`, err));
