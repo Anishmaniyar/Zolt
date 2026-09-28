@@ -30,7 +30,7 @@ export interface ExecutionInterface {
 }
 
 export const createNewExecution = async (job: JobForExecution) => {
-  const execution = await ExecutionRepository.newExecution(job.id, 1, null);
+  const execution = await ExecutionRepository.newExecution(job.id, 1, null, 'QUEUED');
 
   if (!execution) {
     throw new AppError('Error generating the execution', 500);
@@ -47,6 +47,8 @@ export const executeExistingExecution = async (executionId: string) => {
   if (!execution) {
     throw new AppError(`Execution ${executionId} not found`, 404);
   }
+
+  if (execution.status !== 'QUEUED') return false;
 
   const job = await JobRepository.getJobById(execution.job_id);
 
@@ -121,7 +123,12 @@ export const executeExistingExecution = async (executionId: string) => {
 
       const retryAt = calculateRetryAt(retryNumber);
 
-      const newExecution = await ExecutionRepository.newExecution(job, nextAttempt, retryAt);
+      const newExecution = await ExecutionRepository.newExecution(
+        job.id,
+        nextAttempt,
+        retryAt,
+        'SCHEDULED',
+      );
 
       if (!newExecution) {
         throw new AppError('Error generating the retry execution', 500);

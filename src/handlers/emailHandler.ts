@@ -2,7 +2,7 @@ export const emailHandler = async (payload: any) => {
   console.log('EMAIL JOB STARTED');
   console.log('Data: ', payload);
 
-  await new Promise((resolve) => setTimeout(resolve, 5000));
+  await new Promise((resolve) => setTimeout(resolve, 15000));
 
   console.log('EMAIL JOB DONE');
 };

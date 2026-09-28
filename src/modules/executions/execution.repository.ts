@@ -1,6 +1,11 @@
 import { pool } from '../../infrastructure/database/pool.js';
 
-export const newExecution = async (id: string, attempt: number, retry_at: Date | null) => {
+export const newExecution = async (
+  jobId: string,
+  attempt: number,
+  retry_at: Date | null,
+  status: 'SCHEDULED' | 'QUEUED' = 'SCHEDULED',
+) => {
   const result = await pool.query(
     `
       INSERT INTO executions (
@@ -10,10 +15,10 @@ export const newExecution = async (id: string, attempt: number, retry_at: Date |
         started_at,
         retry_at
       )
-      VALUES ($1, $2, 'SCHEDULED', NULL, $3)
+      VALUES ($1, $2, $3, NULL, $4)
       RETURNING *
     `,
-    [id, attempt, retry_at],
+    [jobId, attempt, status, retry_at],
   );
 
   return result.rows[0] ?? null;
