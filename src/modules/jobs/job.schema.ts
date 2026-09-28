@@ -46,7 +46,7 @@ export const getJobsSchema = z.object({
 
     limit: z.coerce.number().int().min(1).max(100).default(20),
 
-    status: z.enum(['SCHEDULED', 'QUEUED', 'COMPLETED', 'FAILED', 'CANCELLED']).optional(),
+    status: z.enum(['SCHEDULED', 'QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED']).optional(),
 
     sortBy: z.enum(['createdAt', 'updatedAt', 'runAt']).default('createdAt'),
 

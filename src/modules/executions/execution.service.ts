@@ -81,6 +81,7 @@ export const executeExistingExecution = async (executionId: string) => {
   }
 
   await ExecutionRepository.startExecution(execution.id);
+  await JobRepository.startJob(job.id);
 
   // ONLY CLAIMED REACHES THE HANDLER
   const handler = handlerRegistry[job.type as JobType];

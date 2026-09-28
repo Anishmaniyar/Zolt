@@ -27,13 +27,11 @@ export const getByJobId = async (jobId: string) => {
  * guarantees only one caller can win the claim for a given key. Losers
  * get rowCount = 0 and then inspect the record to learn why.
  */
-export const claimIdempotency = async (
-  idempotencyKey: string,
-): Promise<IdempotencyClaimResult> => {
+export const claimIdempotency = async (idempotencyKey: string): Promise<IdempotencyClaimResult> => {
   const result = await pool.query(
     `
       UPDATE idempotency_records
-      SET status = 'PROCESSING'
+      SET status = 'PROCESSING', processing_started_at = NOW(), updated_at = NOW()
       WHERE idempotency_key = $1
         AND status = 'PENDING'
       RETURNING id
@@ -74,7 +72,7 @@ export const completeIdempotency = async (idempotencyKey: string): Promise<void>
   const result = await pool.query(
     `
       UPDATE idempotency_records
-      SET status = 'COMPLETED'
+      SET status = 'COMPLETED', processing_started_at = NULL, updated_at = NOW()
       WHERE idempotency_key = $1
         AND status = 'PROCESSING'
     `,
@@ -94,7 +92,7 @@ export const resetToPending = async (idempotencyKey: string): Promise<void> => {
   const result = await pool.query(
     `
       UPDATE idempotency_records
-      SET status = 'PENDING'
+      SET status = 'PENDING', processing_started_at = NULL, updated_at = NOW()
       WHERE idempotency_key = $1
         AND status = 'PROCESSING'
     `,
@@ -104,4 +102,41 @@ export const resetToPending = async (idempotencyKey: string): Promise<void> => {
   if (result.rowCount !== 1) {
     throw new AppError(`Unable to reset idempotency record ${idempotencyKey}`, 500);
   }
+};
+
+export const getStaleProcessingRecords = async (timeout: number) => {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM idempotency_records
+      WHERE status = 'PROCESSING'
+        AND processing_started_at < NOW() - ($1 * INTERVAL '1 millisecond')
+    `,
+    [timeout],
+  );
+
+  return result.rows;
+};
+
+/**
+ * Resets a stale PROCESSING record to PENDING so it can be claimed again.
+ *
+ * The timeout check is repeated inside the UPDATE, so a record that was
+ * freshly (re-)claimed between the SELECT and this UPDATE is not reset:
+ * only rows still older than the timeout are touched. Returns the number
+ * of rows reset (0 = lost the race, nothing to do).
+ */
+export const resetStaleProcessingRecord = async (recordId: string, timeoutMs: number) => {
+  const result = await pool.query(
+    `
+      UPDATE idempotency_records
+      SET status = 'PENDING', processing_started_at = NULL, updated_at = NOW()
+      WHERE id = $1
+        AND status = 'PROCESSING'
+        AND processing_started_at < NOW() - ($2 * INTERVAL '1 millisecond')
+    `,
+    [recordId, timeoutMs],
+  );
+
+  return result.rowCount;
 };

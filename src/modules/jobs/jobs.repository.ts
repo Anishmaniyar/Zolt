@@ -180,8 +180,7 @@ export const cancelJobStatus = async (id: string) => {
   return result.rows[0];
 };
 
-export const successJob = async (jobId: string) => {
-  const result = await pool.query(
+export const successJob = async (jobId: string) => {  const result = await pool.query(
     `
       UPDATE jobs
       SET
@@ -210,4 +209,23 @@ export const failedJob = async (jobId: string) => {
   );
 
   return result.rows[0];
+};
+
+export const startJob = async (jobId: string) => {
+  // QUEUED -> RUNNING only. Retries find the job already RUNNING,
+  // so they get 0 rows back — that is intentional and not an error.
+  const result = await pool.query(
+    `
+      UPDATE jobs
+      SET
+        status = 'RUNNING',
+        updated_at = NOW()
+      WHERE id = $1
+        AND status = 'QUEUED'
+      RETURNING *;
+    `,
+    [jobId],
+  );
+
+  return result.rows[0] ?? null;
 };

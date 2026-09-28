@@ -9,16 +9,11 @@ export const workerRedisConnection = redis.duplicate({
   maxRetriesPerRequest: null,
 });
 
-// a simple utility to simulate a heavy workload
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+console.log(`📡 [${config.worker.id}] worker booted (Concurrency: ${config.worker.concurrency})`);
 
 const worker = new Worker(
   'jobs',
   async (job) => {
-    console.log(`📡 [${config.worker.id}] initialized (Concurrency: ${config.worker.concurrency})`);
-
-    await delay(5000);
-
     switch (job.name) {
       case 'execute-job': {
         console.log(`⏱️  [${config.worker.id}] STARTing Job #${job.id} - Type: ${job.name}`);

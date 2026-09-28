@@ -21,6 +21,8 @@ const envSchema = z.object({
   SCHEDULER_BATCH_SIZE: z.coerce.number().min(5).default(5),
 
   SCHEDULER_ID: z.string().default('unknown-scheduler'),
+
+  IDEMPOTENCY_PROCESSING_TIMEOUT_MS: z.coerce.number(),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -59,5 +61,9 @@ export const config = Object.freeze({
     intervalSize: env.SCHEDULER_POOL_INTERVAL,
     batch: env.SCHEDULER_BATCH_SIZE,
     id: env.SCHEDULER_ID,
+  }),
+
+  idempotemcy: Object.freeze({
+    processingTimeout: env.IDEMPOTENCY_PROCESSING_TIMEOUT_MS,
   }),
 });
