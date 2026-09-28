@@ -1,4 +1,5 @@
 import { pool } from '../../infrastructure/database/pool.js';
+import type { PoolClient } from 'pg';
 
 export const newExecution = async (
   jobId: string,
@@ -42,8 +43,8 @@ export const failedExecution = async (executionId: string, errorMessage: string)
   return result.rows[0];
 };
 
-export const successExecution = async (executionId: string) => {
-  const result = await pool.query(
+export const successExecution = async (client: PoolClient, executionId: string) => {
+  const result = await client.query(
     `
       UPDATE executions
       SET

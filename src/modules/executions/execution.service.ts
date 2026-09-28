@@ -4,6 +4,7 @@ import * as ExecutionRepository from './execution.repository.js';
 import * as JobRepository from '../jobs/jobs.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
 import { calculateRetryAt } from '../../utils/retry.utils.js';
+import { pool } from '../../infrastructure/database/pool.js';
 
 export type JobType = 'SEND_EMAIL' | 'CREATE_CAMPAIGN';
 
@@ -70,9 +71,22 @@ export const executeExistingExecution = async (executionId: string) => {
 
   // Another worker already finished this logical operation.
   if (claimResult === 'ALREADY_COMPLETED') {
-    await ExecutionRepository.successExecution(execution.id);
+    const client = await pool.connect();
 
-    return true;
+    try {
+      await client.query('BEGIN');
+
+      await ExecutionRepository.successExecution(client, execution.id);
+
+      await client.query('COMMIT');
+
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   // Another worker is currently running this logical operation.
@@ -97,15 +111,9 @@ export const executeExistingExecution = async (executionId: string) => {
     throw new AppError(`No handler registered for type: ${job.type}`, 500);
   }
 
+  // run handler if it fails run the logic to check if the more execution exists or not
   try {
     await handler(job.payload ?? {});
-
-    await IdempotencyRepository.completeIdempotency(idempotencyKey);
-
-    await ExecutionRepository.successExecution(execution.id);
-    await JobRepository.successJob(job.id);
-
-    return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown execution error';
 
@@ -142,6 +150,25 @@ export const executeExistingExecution = async (executionId: string) => {
     await JobRepository.failedJob(job.id);
 
     return false;
+  }
+
+  const client = await pool.connect();
+
+  // running the transaction to change the records togethere
+  try {
+    await client.query('BEGIN');
+
+    await IdempotencyRepository.completeIdempotency(client, idempotencyKey);
+    await ExecutionRepository.successExecution(client, execution.id);
+    await JobRepository.successJob(client, job.id);
+
+    await client.query('COMMIT');
+
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK');
+  } finally {
+    client.release();
   }
 };
 

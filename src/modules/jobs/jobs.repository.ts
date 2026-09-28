@@ -1,5 +1,6 @@
 import { pool } from '../../infrastructure/database/pool.js';
 import type { GetJobsQuery } from './jobs.types.js';
+import type { PoolClient } from 'pg';
 
 export interface CreateJobData {
   title: string;
@@ -180,7 +181,8 @@ export const cancelJobStatus = async (id: string) => {
   return result.rows[0];
 };
 
-export const successJob = async (jobId: string) => {  const result = await pool.query(
+export const successJob = async (client: PoolClient, jobId: string) => {
+  const result = await client.query(
     `
       UPDATE jobs
       SET

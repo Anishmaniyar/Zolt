@@ -1,5 +1,6 @@
 import { pool } from '../../infrastructure/database/pool.js';
 import AppError from '../../shared/errors/appError.js';
+import type { PoolClient } from 'pg';
 
 export type IdempotencyClaimResult = 'CLAIMED' | 'ALREADY_PROCESSING' | 'ALREADY_COMPLETED';
 
@@ -68,8 +69,11 @@ export const claimIdempotency = async (idempotencyKey: string): Promise<Idempote
 /**
  * Marks the record as COMPLETED once the handler has succeeded.
  */
-export const completeIdempotency = async (idempotencyKey: string): Promise<void> => {
-  const result = await pool.query(
+export const completeIdempotency = async (
+  client: PoolClient,
+  idempotencyKey: string,
+): Promise<void> => {
+  const result = await client.query(
     `
       UPDATE idempotency_records
       SET status = 'COMPLETED', processing_started_at = NULL, updated_at = NOW()
