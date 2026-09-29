@@ -3,6 +3,8 @@ import { enqueueJobs, enqueueExecutions } from '../../infrastructure/queue/queue
 import { config } from '../../config/env.config.js';
 import * as OutboxRepository from '../outbox/outbox.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
+import * as LeaseRepository from '../leases/leases.repository.js';
+import * as ExecutionService from '../executions/execution.service.js';
 import { logger } from '../../shared/logger/logger.js';
 
 // fetches jobs from db
@@ -193,6 +195,67 @@ const processStaleIdempotency = async () => {
   }
 };
 
+// Finds expired leases and recovers each execution. One lease's
+// failure must not block the rest, so each recovery is isolated.
+const processExpiredLeases = async () => {
+  try {
+    const expiredLeases = await LeaseRepository.findExpiredLeases();
+
+    if (expiredLeases.length === 0) return true;
+
+    logger.warn(
+      {
+        event: 'lease.expired_leases_found',
+        schedulerId: config.scheduler.id,
+        count: expiredLeases.length,
+      },
+      'EXPIRED LEASES FOUND',
+    );
+
+    for (const lease of expiredLeases) {
+      logger.warn(
+        {
+          event: 'lease.expired',
+          schedulerId: config.scheduler.id,
+          leaseId: lease.lease_id,
+          executionId: lease.execution_id,
+          workerId: lease.worker_id,
+          expiredAt: lease.lease_expires_at,
+          executionStatus: lease.execution_status,
+        },
+        'EXPIRED LEASE',
+      );
+
+      try {
+        await ExecutionService.recoverExpiredExecution(lease.execution_id);
+      } catch (error) {
+        logger.error(
+          {
+            event: 'scheduler.error',
+            schedulerId: config.scheduler.id,
+            executionId: lease.execution_id,
+            error,
+          },
+          'EXPIRED LEASE RECOVERY FAILED',
+        );
+      }
+    }
+
+    return true;
+  } catch (error) {
+    logger.error(
+      {
+        event: 'scheduler.error',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'EXPIRED LEASE PROCESSING FAILED',
+    );
+
+    return false;
+  }
+};
+
 let schedulerInterval: NodeJS.Timeout | undefined;
 
 export const startScheduler = () => {
@@ -218,6 +281,7 @@ export const startScheduler = () => {
     await processDueExecutions();
     await processPendingOutbox();
     await processStaleIdempotency();
+    await processExpiredLeases();
   };
 
   // Run once immediately instead of waiting for the first interval.

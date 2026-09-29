@@ -136,8 +136,12 @@ describe('Execution lifecycle and retry', () => {
   };
 
   afterEach(async () => {
-    // executions.job_id has no ON DELETE CASCADE, so children go first.
+    // leases.execution_id has no ON DELETE CASCADE, so leases go first.
     for (const jobId of createdJobIds.splice(0)) {
+      await pool.query(
+        `DELETE FROM leases WHERE execution_id IN (SELECT id FROM executions WHERE job_id = $1)`,
+        [jobId],
+      );
       await pool.query(`DELETE FROM executions WHERE job_id = $1`, [jobId]);
       await pool.query(`DELETE FROM idempotency_records WHERE job_id = $1`, [jobId]);
       await pool.query(`DELETE FROM jobs WHERE id = $1`, [jobId]);

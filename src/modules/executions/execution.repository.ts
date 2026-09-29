@@ -102,6 +102,20 @@ export const getExecutionById = async (executionId: string) => {
   return result.rows[0] ?? null;
 };
 
+export const getExecutionByIdForUpdate = async (client: PoolClient, executionId: string) => {
+  const result = await client.query(
+    `
+      SELECT *
+      FROM executions
+      WHERE id = $1
+      FOR UPDATE
+    `,
+    [executionId],
+  );
+
+  return result.rows[0] ?? null;
+};
+
 export const getExecutionsByJobId = async (jobId: string) => {
   const result = await pool.query(
     `
@@ -148,4 +162,22 @@ export const timedOutExecution = async (client: PoolClient, executionId: string)
   );
 
   return result.rows[0];
+};
+
+export const markWorkerCrashed = async (client: PoolClient, executionId: string) => {
+  const result = await client.query(
+    `
+      UPDATE executions
+      SET
+        status = 'WORKER_CRASHED',
+        updated_at = NOW(),
+        completed_at = NOW()
+      WHERE id = $1
+        AND status = 'RUNNING'
+      RETURNING *;
+    `,
+    [executionId],
+  );
+
+  return result.rows[0] ?? null;
 };

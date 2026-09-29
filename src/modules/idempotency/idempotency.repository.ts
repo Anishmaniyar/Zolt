@@ -22,6 +22,23 @@ export const getByJobId = async (jobId: string) => {
 };
 
 /**
+ * Locked read of the idempotency record for use inside a transaction.
+ */
+export const getByJobIdForUpdate = async (client: PoolClient, jobId: string) => {
+  const result = await client.query(
+    `
+      SELECT *
+      FROM idempotency_records
+      WHERE job_id = $1
+      FOR UPDATE
+    `,
+    [jobId],
+  );
+
+  return result.rows[0] ?? null;
+};
+
+/**
  * Atomically transitions PENDING -> PROCESSING.
  *
  * The status check happens inside the UPDATE statement, so PostgreSQL

@@ -12,7 +12,7 @@ const envSchema = z.object({
 
   WORKER_CONCURRENCY: z.coerce.number().min(1).default(5),
 
-  WORKER_ID: z.string().default('unknow-worker'),
+  WORKER_ID: z.string().default('unknown-worker'),
 
   GLOBAL_CONCURRENCY: z.coerce.number().min(1).default(6),
 
@@ -25,6 +25,10 @@ const envSchema = z.object({
   IDEMPOTENCY_PROCESSING_TIMEOUT_MS: z.coerce.number(),
 
   EXECUTION_TIMEOUT_MS: z.coerce.number().int().positive(),
+
+  LEASE_DURATION_MS: z.coerce.number().int().positive().default(30000),
+
+  HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -71,5 +75,12 @@ export const config = Object.freeze({
 
   execution: Object.freeze({
     timeout: env.EXECUTION_TIMEOUT_MS,
+  }),
+
+  // Heartbeat must run more often than the lease expires so a live
+  // worker renews several times before expiry.
+  lease: Object.freeze({
+    duration: env.LEASE_DURATION_MS,
+    heartbeatInterval: env.HEARTBEAT_INTERVAL_MS,
   }),
 });

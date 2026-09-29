@@ -3,10 +3,13 @@ import AppError from '../../shared/errors/appError.js';
 import * as ExecutionRepository from './execution.repository.js';
 import * as JobRepository from '../jobs/jobs.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
+import * as LeaseRepository from '../leases/leases.repository.js';
+import * as OutboxRepository from '../outbox/outbox.repository.js';
 import { calculateRetryAt } from '../../utils/retry.utils.js';
 import { pool } from '../../infrastructure/database/pool.js';
 import { logger } from '../../shared/logger/logger.js';
 import { config } from '../../config/env.config.js';
+import { registerExecution, unregisterExecution } from '../../workers/heartbeat.js';
 
 export type JobType = 'SEND_EMAIL' | 'CREATE_CAMPAIGN';
 
@@ -32,7 +35,7 @@ export interface ExecutionInterface {
   updated_at: Date;
 }
 
-export const createNewExecution = async (job: JobForExecution) => {
+export const createNewExecution = async (job: JobForExecution, workerId: string = config.worker.id) => {
   const execution = await ExecutionRepository.newInitialExecution(job.id, 1, null, 'QUEUED');
 
   if (!execution) {
@@ -50,12 +53,15 @@ export const createNewExecution = async (job: JobForExecution) => {
     'EXECUTION CREATED',
   );
 
-  await executeExistingExecution(execution.id);
+  await executeExistingExecution(execution.id, workerId);
 
   return true;
 };
 
-export const executeExistingExecution = async (executionId: string) => {
+export const executeExistingExecution = async (
+  executionId: string,
+  workerId: string = config.worker.id,
+) => {
   const execution = await ExecutionRepository.getExecutionById(executionId);
 
   if (!execution) {
@@ -64,15 +70,50 @@ export const executeExistingExecution = async (executionId: string) => {
 
   if (execution.status !== 'QUEUED') return false;
 
+  const lease = await LeaseRepository.acquireExecutionLease(
+    execution.id,
+    workerId,
+    config.lease.duration,
+  );
+
+  if (!lease) {
+    logger.info(
+      {
+        event: 'execution.lease_not_acquired',
+        workerId,
+        executionId: execution.id,
+        jobId: execution.job_id,
+      },
+      'EXECUTION LEASE NOT ACQUIRED',
+    );
+
+    return false;
+  }
+
+  logger.info(
+    {
+      event: 'execution.lease_acquired',
+      workerId,
+      executionId: execution.id,
+      jobId: execution.job_id,
+      leaseExpiresAt: lease.lease_expires_at,
+    },
+    'EXECUTION LEASE ACQUIRED',
+  );
+
+  registerExecution(execution.id, workerId);
+
   const job = await JobRepository.getJobById(execution.job_id);
 
   if (!job) {
+    unregisterExecution(execution.id);
     throw new AppError(`Job ${execution.job_id} not found`, 404);
   }
 
   const idempotencyRecord = await IdempotencyRepository.getByJobId(job.id);
 
   if (!idempotencyRecord) {
+    unregisterExecution(execution.id);
     throw new AppError(`Idempotency record not found for job ${job.id}`, 500);
   }
 
@@ -90,9 +131,12 @@ export const executeExistingExecution = async (executionId: string) => {
 
       await client.query('COMMIT');
 
+      unregisterExecution(execution.id);
+
       return true;
     } catch (error) {
       await client.query('ROLLBACK');
+      unregisterExecution(execution.id);
       throw error;
     } finally {
       client.release();
@@ -100,6 +144,7 @@ export const executeExistingExecution = async (executionId: string) => {
   }
 
   if (claimResult === 'ALREADY_PROCESSING') {
+    unregisterExecution(execution.id);
     return false;
   }
 
@@ -136,6 +181,7 @@ export const executeExistingExecution = async (executionId: string) => {
       await noHandlerClient.query('COMMIT');
     } catch (error) {
       await noHandlerClient.query('ROLLBACK');
+      unregisterExecution(execution.id);
       throw error;
     } finally {
       noHandlerClient.release();
@@ -164,6 +210,8 @@ export const executeExistingExecution = async (executionId: string) => {
       },
       'JOB FAILED',
     );
+
+    unregisterExecution(execution.id);
 
     throw new AppError(errorMessage, 500);
   }
@@ -234,9 +282,12 @@ export const executeExistingExecution = async (executionId: string) => {
             'EXECUTION RETRY SCHEDULED',
           );
 
+          unregisterExecution(execution.id);
+
           return false;
         } catch (error) {
           await retryTimeoutClient.query('ROLLBACK');
+          unregisterExecution(execution.id);
           throw error;
         } finally {
           retryTimeoutClient.release();
@@ -278,9 +329,12 @@ export const executeExistingExecution = async (executionId: string) => {
           'JOB FAILED',
         );
 
+        unregisterExecution(execution.id);
+
         return false;
       } catch (error) {
         await client.query('ROLLBACK');
+        unregisterExecution(execution.id);
         throw error;
       } finally {
         client.release();
@@ -351,9 +405,12 @@ export const executeExistingExecution = async (executionId: string) => {
           'EXECUTION RETRY SCHEDULED',
         );
 
+        unregisterExecution(execution.id);
+
         return false;
       } catch (error) {
         await retryClient.query('ROLLBACK');
+        unregisterExecution(execution.id);
         throw error;
       } finally {
         retryClient.release();
@@ -402,9 +459,12 @@ export const executeExistingExecution = async (executionId: string) => {
         'JOB FAILED',
       );
 
+      unregisterExecution(execution.id);
+
       return false;
     } catch (error) {
       await finalFailureClient.query('ROLLBACK');
+      unregisterExecution(execution.id);
       throw error;
     } finally {
       finalFailureClient.release();
@@ -447,6 +507,178 @@ export const executeExistingExecution = async (executionId: string) => {
         status: result.status,
       },
       'JOB COMPLETED',
+    );
+
+    unregisterExecution(execution.id);
+
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    unregisterExecution(execution.id);
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * Recovers a RUNNING execution whose worker lease expired.
+ *
+ * Idempotency COMPLETED (handler finished, worker died before marking
+ * it) finalizes execution + job. Idempotency PROCESSING (worker died
+ * mid-run) marks the execution WORKER_CRASHED and creates the next
+ * execution plus its outbox record in the same transaction. Anything
+ * else is skipped: a missing record or unexpected status is an
+ * invariant failure that must not spawn executions.
+ *
+ * Returns true when a recovery action was committed, false when there
+ * was nothing to recover (already finished, lease renewed, invariant).
+ */
+export const recoverExpiredExecution = async (executionId: string) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const execution = await ExecutionRepository.getExecutionByIdForUpdate(client, executionId);
+
+    if (!execution) {
+      throw new AppError(`Execution ${executionId} not found`, 404);
+    }
+
+    if (execution.status !== 'RUNNING') {
+      await client.query('ROLLBACK');
+      return false;
+    }
+
+    const lease = await LeaseRepository.findLeaseByExecutionIdForUpdate(client, executionId);
+
+    if (!lease || new Date(lease.lease_expires_at) > new Date()) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+
+    const idempotency = await IdempotencyRepository.getByJobIdForUpdate(
+      client,
+      execution.job_id,
+    );
+
+    if (!idempotency) {
+      await client.query('ROLLBACK');
+
+      logger.error(
+        {
+          event: 'execution.recovery_invariant',
+          executionId: execution.id,
+          jobId: execution.job_id,
+          reason: 'idempotency_record_missing',
+        },
+        'EXECUTION RECOVERY INVARIANT FAILURE',
+      );
+
+      return false;
+    }
+
+    if (idempotency.status === 'COMPLETED') {
+      const execution2 = await ExecutionRepository.successExecution(client, execution.id);
+
+      const result = await JobRepository.successJob(client, execution.job_id);
+
+      await client.query('COMMIT');
+
+      logger.info(
+        {
+          event: 'execution.recovered',
+          executionId: execution2.id,
+          jobId: execution2.job_id,
+          attempt: execution2.attempt,
+          status: execution2.status,
+          reason: 'idempotency_completed',
+        },
+        'EXECUTION RECOVERED AS COMPLETED',
+      );
+
+      logger.info(
+        {
+          event: 'job.completed',
+          jobId: result.id,
+          type: result.type,
+          scheduleType: result.schedule_type,
+          maxAttempts: result.max_attempts,
+          status: result.status,
+        },
+        'JOB COMPLETED',
+      );
+
+      return true;
+    }
+
+    if (idempotency.status !== 'PROCESSING') {
+      await client.query('ROLLBACK');
+
+      logger.error(
+        {
+          event: 'execution.recovery_invariant',
+          executionId: execution.id,
+          jobId: execution.job_id,
+          reason: 'unexpected_idempotency_status',
+          idempotencyStatus: idempotency.status,
+        },
+        'EXECUTION RECOVERY INVARIANT FAILURE',
+      );
+
+      return false;
+    }
+
+    const crashed = await ExecutionRepository.markWorkerCrashed(client, execution.id);
+
+    if (!crashed) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+
+    const nextAttempt = execution.attempt + 1;
+    const retryNumber = nextAttempt - 1;
+    const retryAt = calculateRetryAt(retryNumber);
+
+    const newExecution = await ExecutionRepository.newExecution(
+      client,
+      execution.job_id,
+      nextAttempt,
+      retryAt,
+      'SCHEDULED',
+    );
+
+    if (!newExecution) {
+      throw new AppError('Error generating the recovery execution', 500);
+    }
+
+    await OutboxRepository.createExecutionOutbox(client, newExecution.id);
+
+    await client.query('COMMIT');
+
+    logger.warn(
+      {
+        event: 'execution.worker_crashed',
+        executionId: crashed.id,
+        jobId: crashed.job_id,
+        attempt: crashed.attempt,
+        status: crashed.status,
+        workerId: lease.worker_id,
+      },
+      'EXECUTION WORKER CRASHED',
+    );
+
+    logger.info(
+      {
+        event: 'execution.retry_scheduled',
+        jobId: newExecution.job_id,
+        failedExecutionId: execution.id,
+        retryExecutionId: newExecution.id,
+        attempt: newExecution.attempt,
+        retryAt: newExecution.retry_at,
+      },
+      'EXECUTION RETRY SCHEDULED',
     );
 
     return true;
