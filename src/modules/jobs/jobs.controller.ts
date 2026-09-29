@@ -1,13 +1,25 @@
 import asyncHandler from '../../utils/asyncHandler.js';
 import { Request, Response, NextFunction } from 'express';
 import * as JobService from './jobs.service.js';
-import { string } from 'zod';
 import { GetJobsQuery } from './jobs.types.js';
 import * as ExecutionService from '../executions/execution.service.js';
+import { logger } from '../../shared/logger/logger.js';
 
 export const createJobController = asyncHandler(
   async (req: Request, res: Response, next: NextFunction) => {
     const result = await JobService.createJobService(req.body);
+
+    logger.info(
+      {
+        event: 'job.created',
+        jobId: result.id,
+        type: result.type,
+        scheduleType: result.schedule_type,
+        maxAttempts: result.max_attempts,
+        status: result.status,
+      },
+      'JOB CREATED',
+    );
 
     return res.status(201).json({
       message: 'Job created successfully',
@@ -48,6 +60,17 @@ export const cancelJobController = asyncHandler(async (req: Request, res: Respon
   const { id } = req.params;
 
   const result = await JobService.cancelJobService({ id: id as string });
+
+  logger.info(
+    {
+      event: 'job.cancelled',
+      jobId: result.id,
+      type: result.type,
+      scheduleType: result.schedule_type,
+      maxAttempts: result.max_attempts,
+    },
+    'JOB CANCELLED',
+  );
 
   return res.status(200).json({
     message: 'Job cancelled successfully',

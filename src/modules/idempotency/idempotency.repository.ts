@@ -92,8 +92,8 @@ export const completeIdempotency = async (
  * Resets a claim to PENDING when the handler fails but attempts remain,
  * so the queued retry execution can claim the record again.
  */
-export const resetToPending = async (idempotencyKey: string): Promise<void> => {
-  const result = await pool.query(
+export const resetToPending = async (client: PoolClient, idempotencyKey: string): Promise<void> => {
+  const result = await client.query(
     `
       UPDATE idempotency_records
       SET status = 'PENDING', processing_started_at = NULL, updated_at = NOW()

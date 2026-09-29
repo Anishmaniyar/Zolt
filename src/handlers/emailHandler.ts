@@ -1,4 +1,4 @@
-export const emailHandler = async (payload: any) => {
+export const emailHandler = async (payload: any, signal: AbortSignal) => {
   console.log('EMAIL JOB STARTED');
   console.log('Data: ', payload);
 

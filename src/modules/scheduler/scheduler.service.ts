@@ -3,79 +3,92 @@ import { enqueueJobs, enqueueExecutions } from '../../infrastructure/queue/queue
 import { config } from '../../config/env.config.js';
 import * as OutboxRepository from '../outbox/outbox.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
+import { logger } from '../../shared/logger/logger.js';
 
 // fetches jobs from db
 const processDueJobs = async () => {
   try {
-    console.log('Scheduler Job tick');
-
-    console.log(`🔍 [${config.scheduler.id}] checking database for due jobs...`);
-
     const fetchAndClaimJobs = await SchedulerRepository.processJobTransaction(
       config.scheduler.batch,
     );
 
     if (fetchAndClaimJobs.length === 0) return;
 
-    console.log(
-      `🎯 [${config.scheduler.id}] ATOMICALLY CLAIMED: ${fetchAndClaimJobs.length} jobs. Outbox publisher will enqueue them.`,
-    );
+    for (const job of fetchAndClaimJobs) {
+      logger.info(
+        {
+          event: 'job.claimed',
+          schedulerId: config.scheduler.id,
+          jobId: job.id,
+        },
+        'JOB CLAIMED',
+      );
+    }
 
-    // NOTE: no direct enqueue here. processJobTransaction already wrote
+    // NOTE: no direct enqueue here.
+    // processJobTransaction already wrote
     // outbox(job_id) PENDING inside the same DB transaction.
-    // processPendingOutbox is the SOLE publisher (transactional outbox).
+    // processPendingOutbox is the SOLE publisher.
   } catch (error) {
-    console.error(`❌ [${config.scheduler.id}] Scheduler tick failed:`, error);
+    logger.error(
+      {
+        event: 'scheduler.error',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'SCHEDULER JOB PROCESSING FAILED',
+    );
   }
 };
 
 // fetch executions from db
 const processDueExecutions = async () => {
   try {
-    console.log('Scheduler Execution tick');
-
-    console.log(`🔍 [${config.scheduler.id}] checking database for due executions...`);
-
     const fetchAndClaimExecutions = await SchedulerRepository.processExecutionTransactions(
       config.scheduler.batch,
     );
 
     if (fetchAndClaimExecutions.length === 0) return;
 
-    console.log(
-      `🎯 [${config.scheduler.id}] ATOMICALLY CLAIMED: ${fetchAndClaimExecutions.length} executions. Outbox publisher will enqueue them.`,
-    );
+    for (const execution of fetchAndClaimExecutions) {
+      logger.info(
+        {
+          event: 'execution.claimed',
+          schedulerId: config.scheduler.id,
+          executionId: execution.id,
+          jobId: execution.job_id,
+          attempt: execution.attempt,
+        },
+        'EXECUTION CLAIMED',
+      );
+    }
 
-    // NOTE: no direct enqueue here. processExecutionTransactions already wrote
+    // NOTE: no direct enqueue here.
+    // processExecutionTransactions already wrote
     // outbox(execution_id) PENDING inside the same DB transaction.
   } catch (error) {
-    console.error(`❌ [${config.scheduler.id}] Scheduler tick failed:`, error);
+    logger.error(
+      {
+        event: 'scheduler.error',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'SCHEDULER EXECUTION PROCESSING FAILED',
+    );
   }
 };
 
-// fetch the pending outbox rows and publish them exactly once per claim.
-// This is the SOLE place that enqueues to BullMQ (transactional outbox).
+// fetch the pending outbox rows and publish them.
+// This is the SOLE place that enqueues to BullMQ.
 const processPendingOutbox = async () => {
   try {
-    console.log('Scheduler Outbox tick');
-
-    console.log(`🔍 [${config.scheduler.id}] checking database for due outbox ...`);
-
     const claimedOutbox = await OutboxRepository.claimPendingOutbox(config.scheduler.batch);
 
     if (claimedOutbox.length === 0) return 0;
 
-    console.log(
-      `🎯 [${config.scheduler.id}] CLAIMED: ${claimedOutbox.length} pending outbox records.`,
-    );
-
     const jobOutboxes = claimedOutbox.filter((outbox) => outbox.job_id !== null);
 
     const executionOutboxes = claimedOutbox.filter((outbox) => outbox.execution_id !== null);
-
-    console.log(
-      `📤 Publishing ${jobOutboxes.length} jobs and ${executionOutboxes.length} executions.`,
-    );
 
     try {
       if (jobOutboxes.length > 0) {
@@ -86,8 +99,8 @@ const processPendingOutbox = async () => {
         );
       }
     } catch (error) {
-      // Redis down after DB claim -> give rows back so next tick retries.
-      await OutboxRepository.resetOutboxToPending(jobOutboxes.map((o) => o.id));
+      await OutboxRepository.resetOutboxToPending(jobOutboxes.map((outbox) => outbox.id));
+
       throw error;
     }
 
@@ -100,13 +113,22 @@ const processPendingOutbox = async () => {
         );
       }
     } catch (error) {
-      await OutboxRepository.resetOutboxToPending(executionOutboxes.map((o) => o.id));
+      await OutboxRepository.resetOutboxToPending(executionOutboxes.map((outbox) => outbox.id));
+
       throw error;
     }
 
     return claimedOutbox.length;
   } catch (error) {
-    console.error(`❌ [${config.scheduler.id}] Scheduler tick failed:`, error);
+    logger.error(
+      {
+        event: 'scheduler.error',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'SCHEDULER OUTBOX PROCESSING FAILED',
+    );
+
     return 0;
   }
 };
@@ -114,58 +136,94 @@ const processPendingOutbox = async () => {
 const processStaleIdempotency = async () => {
   try {
     const timeout = config.idempotemcy.processingTimeout;
+
     const staleRecords = await IdempotencyRepository.getStaleProcessingRecords(timeout);
 
     if (staleRecords.length === 0) return true;
 
-    console.log(`⚠️ Found ${staleRecords.length} stale idempotency records`);
+    logger.warn(
+      {
+        event: 'idempotency.stale_records_found',
+        schedulerId: config.scheduler.id,
+        count: staleRecords.length,
+      },
+      'STALE IDEMPOTENCY RECORDS FOUND',
+    );
 
     for (const record of staleRecords) {
-      console.log(
-        `Stale idempotency: ${record.id} | Job: ${record.job_id} | Started: ${record.processing_started_at}`,
+      logger.warn(
+        {
+          event: 'idempotency.stale_record',
+          schedulerId: config.scheduler.id,
+          idempotencyId: record.id,
+          jobId: record.job_id,
+          processingStartedAt: record.processing_started_at,
+        },
+        'STALE IDEMPOTENCY RECORD',
       );
     }
 
     for (const record of staleRecords) {
-      const resetCount = await IdempotencyRepository.resetStaleProcessingRecord(
-        record.id,
-        timeout,
-      );
+      const resetCount = await IdempotencyRepository.resetStaleProcessingRecord(record.id, timeout);
 
       if (resetCount === 0) {
-        console.log(
-          `⏭️ Skipped stale idempotency ${record.id}: no longer stale (re-claimed or completed).`,
+        logger.info(
+          {
+            event: 'idempotency.recovery_skipped',
+            schedulerId: config.scheduler.id,
+            idempotencyId: record.id,
+          },
+          'STALE IDEMPOTENCY RECOVERY SKIPPED',
         );
       }
     }
 
     return true;
   } catch (error) {
-    console.error(`❌ [${config.scheduler.id}] Stale idempotency tick failed:`, error);
+    logger.error(
+      {
+        event: 'scheduler.error',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'STALE IDEMPOTENCY PROCESSING FAILED',
+    );
+
     return false;
   }
 };
+
 let schedulerInterval: NodeJS.Timeout | undefined;
 
 export const startScheduler = () => {
-  console.log(
-    `⏱️  Scheduler [${config.scheduler.id}] activated. Polling every ${config.scheduler.intervalSize}ms.`,
+  logger.info(
+    {
+      event: 'scheduler.started',
+      schedulerId: config.scheduler.id,
+      interval: config.scheduler.intervalSize,
+    },
+    'SCHEDULER STARTED',
   );
 
-  // Run sequentially: claim DB rows first, then publish them in the same tick.
-  // The old code fired all three with `void` concurrently, so rows claimed
-  // in this tick were missed by the publisher until the NEXT tick.
   const runTick = async () => {
+    logger.info(
+      {
+        event: 'scheduler.tick',
+        schedulerId: config.scheduler.id,
+      },
+      'SCHEDULER TICK',
+    );
+
     await processDueJobs();
     await processDueExecutions();
     await processPendingOutbox();
     await processStaleIdempotency();
   };
 
-  // Run once immediately instead of waiting 15 seconds.
+  // Run once immediately instead of waiting for the first interval.
   void runTick();
 
-  // Then continue checking sequentially.
+  // Continue checking sequentially.
   schedulerInterval = setInterval(() => {
     void runTick();
   }, config.scheduler.intervalSize);
@@ -173,11 +231,25 @@ export const startScheduler = () => {
 
 export const stopScheduler = () => {
   if (!schedulerInterval) {
-    console.log('Scheduler is not running.');
+    logger.info(
+      {
+        event: 'scheduler.stop_skipped',
+        schedulerId: config.scheduler.id,
+      },
+      'SCHEDULER IS NOT RUNNING',
+    );
+
     return;
   }
 
-  console.log('Stopping scheduler...');
+  logger.info(
+    {
+      event: 'scheduler.stopped',
+      schedulerId: config.scheduler.id,
+    },
+    'SCHEDULER STOPPED',
+  );
+
   clearInterval(schedulerInterval);
   schedulerInterval = undefined;
 };

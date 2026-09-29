@@ -11,10 +11,25 @@ declare global {
   var __failNewExecution: boolean;
   // eslint-disable-next-line no-var
   var __failSuccessJob: boolean;
+  // eslint-disable-next-line no-var
+  var __failFailedJob: boolean;
 }
 
 globalThis.__failNewExecution = false;
 globalThis.__failSuccessJob = false;
+globalThis.__failFailedJob = false;
+
+// Keep the execution timeout short so timeout tests reject via the
+// AbortSignal (~100ms) instead of sleeping through a real timeout.
+vi.mock('../src/config/env.config.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../src/config/env.config.js')
+  >();
+  return {
+    ...actual,
+    config: { ...actual.config, execution: { timeout: 100 } },
+  };
+});
 
 vi.mock('../src/modules/executions/execution.repository.js', async (importOriginal) => {
   const actual = await importOriginal<
@@ -38,6 +53,10 @@ vi.mock('../src/modules/jobs/jobs.repository.js', async (importOriginal) => {
     successJob: async (...args: Parameters<typeof actual.successJob>) => {
       if (globalThis.__failSuccessJob) throw new Error('injected successJob failure');
       return actual.successJob(...args);
+    },
+    failedJob: async (...args: Parameters<typeof actual.failedJob>) => {
+      if (globalThis.__failFailedJob) throw new Error('injected failedJob failure');
+      return actual.failedJob(...args);
     },
   };
 });
@@ -126,6 +145,7 @@ describe('Execution lifecycle and retry', () => {
 
     globalThis.__failNewExecution = false;
     globalThis.__failSuccessJob = false;
+    globalThis.__failFailedJob = false;
     vi.restoreAllMocks();
   });
 
@@ -203,8 +223,9 @@ describe('Execution lifecycle and retry', () => {
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockResolvedValue(undefined);
     globalThis.__failSuccessJob = true;
 
-    // The service swallows transaction errors after ROLLBACK.
-    await expect(executeExistingExecution(executionId)).resolves.toBeUndefined();
+    await expect(executeExistingExecution(executionId)).rejects.toThrow(
+      'injected successJob failure',
+    );
 
     // Started but nothing completed: all three writes were rolled back.
     expect((await getExecution(executionId)).status).toBe('RUNNING');
@@ -224,16 +245,108 @@ describe('Execution lifecycle and retry', () => {
     );
     globalThis.__failNewExecution = true;
 
-    // Retry creation is outside any transaction, so the error propagates.
+    // Single failure-with-retry transaction: ROLLBACK undoes the FAILED
+    // mark and the PENDING reset together with the failed retry insert.
     await expect(executeExistingExecution(executionId)).rejects.toThrow(
       'injected newExecution failure',
     );
 
-    // Committed before the failure: execution marked FAILED, claim reset...
-    expect((await getExecution(executionId)).status).toBe('FAILED');
-    expect((await getIdempotency(idempotencyKey)).status).toBe('PENDING');
+    expect((await getExecution(executionId)).status).toBe('RUNNING');
+    expect((await getIdempotency(idempotencyKey)).status).toBe('PROCESSING');
 
-    // ...but no orphan retry execution was created.
+    // ...and no orphan retry execution was created.
     expect(await countExecutions(jobId)).toBe(1);
+  });
+
+  // Handler that only rejects when the service aborts it on timeout.
+  // Resolves never on its own, so the AbortSignal (~100ms, mocked
+  // EXECUTION_TIMEOUT_MS) is what ends the handler and sets
+  // timeoutTriggered = true in the service.
+  const mockTimeoutHandler = () =>
+    vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockImplementation(
+      (_payload: unknown, signal?: AbortSignal) =>
+        new Promise<undefined>((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(new Error('aborted'));
+            return;
+          }
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
+        }),
+    );
+
+  it('timeout with retry available marks TIMED_OUT and schedules execution 2', async () => {
+    const { jobId, executionId, idempotencyKey } = await createFixture(2);
+    mockTimeoutHandler();
+
+    const result = await executeExistingExecution(executionId);
+
+    expect(result).toBe(false);
+
+    const execution = await getExecution(executionId);
+    expect(execution.status).toBe('TIMED_OUT');
+    expect(execution.attempt).toBe(1);
+
+    const retries = await pool.query(
+      `SELECT * FROM executions WHERE job_id = $1 ORDER BY attempt ASC`,
+      [jobId],
+    );
+    expect(retries.rows).toHaveLength(2);
+
+    const retry = retries.rows[1];
+    expect(retry.attempt).toBe(2);
+    expect(retry.status).toBe('SCHEDULED');
+    expect(retry.retry_at).not.toBeNull();
+
+    const idempotency = await getIdempotency(idempotencyKey);
+    expect(idempotency.status).toBe('PENDING');
+    expect(idempotency.processing_started_at).toBeNull();
+
+    expect((await getJob(jobId)).status).toBe('RUNNING');
+  });
+
+  it('timeout on final attempt marks TIMED_OUT and fails the job', async () => {
+    const { jobId, executionId } = await createFixture(1);
+    mockTimeoutHandler();
+
+    const result = await executeExistingExecution(executionId);
+
+    expect(result).toBe(false);
+    expect((await getExecution(executionId)).status).toBe('TIMED_OUT');
+    expect((await getJob(jobId)).status).toBe('FAILED');
+    expect(await countExecutions(jobId)).toBe(1);
+  });
+
+  it('timeout retry transaction rolls back when retry creation fails', async () => {
+    const { jobId, executionId, idempotencyKey } = await createFixture(2);
+    mockTimeoutHandler();
+    globalThis.__failNewExecution = true;
+
+    await expect(executeExistingExecution(executionId)).rejects.toThrow(
+      'injected newExecution failure',
+    );
+
+    // Nothing from the transaction persists: execution was RUNNING
+    // before BEGIN, no retry was created, claim was not reset.
+    expect((await getExecution(executionId)).status).toBe('RUNNING');
+    expect(await countExecutions(jobId)).toBe(1);
+
+    const idempotency = await getIdempotency(idempotencyKey);
+    expect(idempotency.status).toBe('PROCESSING');
+    expect(idempotency.processing_started_at).not.toBeNull();
+  });
+
+  it('final timeout transaction rolls back when job failure fails', async () => {
+    const { jobId, executionId } = await createFixture(1);
+    mockTimeoutHandler();
+    globalThis.__failFailedJob = true;
+
+    await expect(executeExistingExecution(executionId)).rejects.toThrow(
+      'injected failedJob failure',
+    );
+
+    expect((await getExecution(executionId)).status).toBe('RUNNING');
+    expect((await getJob(jobId)).status).toBe('RUNNING');
   });
 });

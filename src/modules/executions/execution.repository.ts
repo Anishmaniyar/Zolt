@@ -2,6 +2,31 @@ import { pool } from '../../infrastructure/database/pool.js';
 import type { PoolClient } from 'pg';
 
 export const newExecution = async (
+  client: PoolClient,
+  jobId: string,
+  attempt: number,
+  retry_at: Date | null,
+  status: 'SCHEDULED' | 'QUEUED' = 'SCHEDULED',
+) => {
+  const result = await client.query(
+    `
+      INSERT INTO executions (
+        job_id,
+        attempt,
+        status,
+        started_at,
+        retry_at
+      )
+      VALUES ($1, $2, $3, NULL, $4)
+      RETURNING *
+    `,
+    [jobId, attempt, status, retry_at],
+  );
+
+  return result.rows[0] ?? null;
+};
+
+export const newInitialExecution = async (
   jobId: string,
   attempt: number,
   retry_at: Date | null,
@@ -25,8 +50,12 @@ export const newExecution = async (
   return result.rows[0] ?? null;
 };
 
-export const failedExecution = async (executionId: string, errorMessage: string) => {
-  const result = await pool.query(
+export const failedExecution = async (
+  client: PoolClient,
+  executionId: string,
+  errorMessage: string,
+) => {
+  const result = await client.query(
     `
       UPDATE executions
       SET
@@ -95,6 +124,23 @@ export const startExecution = async (executionId: string) => {
         status = 'RUNNING',
         started_at = NOW(),
         updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [executionId],
+  );
+
+  return result.rows[0];
+};
+
+export const timedOutExecution = async (client: PoolClient, executionId: string) => {
+  const result = await client.query(
+    `
+      UPDATE executions
+      SET
+        status = 'TIMED_OUT',
+        updated_at = NOW(),
+        completed_at = NOW()
       WHERE id = $1
       RETURNING *
     `,

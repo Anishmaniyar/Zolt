@@ -5,6 +5,8 @@ import * as JobRepository from '../jobs/jobs.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
 import { calculateRetryAt } from '../../utils/retry.utils.js';
 import { pool } from '../../infrastructure/database/pool.js';
+import { logger } from '../../shared/logger/logger.js';
+import { config } from '../../config/env.config.js';
 
 export type JobType = 'SEND_EMAIL' | 'CREATE_CAMPAIGN';
 
@@ -31,11 +33,22 @@ export interface ExecutionInterface {
 }
 
 export const createNewExecution = async (job: JobForExecution) => {
-  const execution = await ExecutionRepository.newExecution(job.id, 1, null, 'QUEUED');
+  const execution = await ExecutionRepository.newInitialExecution(job.id, 1, null, 'QUEUED');
 
   if (!execution) {
     throw new AppError('Error generating the execution', 500);
   }
+
+  logger.info(
+    {
+      event: 'execution.created',
+      executionId: execution.id,
+      jobId: execution.job_id,
+      attempt: execution.attempt,
+      status: execution.status,
+    },
+    'EXECUTION CREATED',
+  );
 
   await executeExistingExecution(execution.id);
 
@@ -57,7 +70,6 @@ export const executeExistingExecution = async (executionId: string) => {
     throw new AppError(`Job ${execution.job_id} not found`, 404);
   }
 
-  // IDENTITY OF THE LOGICAL OPERATION
   const idempotencyRecord = await IdempotencyRepository.getByJobId(job.id);
 
   if (!idempotencyRecord) {
@@ -66,10 +78,8 @@ export const executeExistingExecution = async (executionId: string) => {
 
   const idempotencyKey = idempotencyRecord.idempotency_key;
 
-  // ATOMIC CLAIM
   const claimResult = await IdempotencyRepository.claimIdempotency(idempotencyKey);
 
-  // Another worker already finished this logical operation.
   if (claimResult === 'ALREADY_COMPLETED') {
     const client = await pool.connect();
 
@@ -89,84 +99,360 @@ export const executeExistingExecution = async (executionId: string) => {
     }
   }
 
-  // Another worker is currently running this logical operation.
   if (claimResult === 'ALREADY_PROCESSING') {
     return false;
   }
 
-  await ExecutionRepository.startExecution(execution.id);
+  const execution1 = await ExecutionRepository.startExecution(execution.id);
+
+  logger.info(
+    {
+      event: 'execution.started',
+      executionId: execution1.id,
+      jobId: execution1.job_id,
+      attempt: execution1.attempt,
+      status: execution1.status,
+      started_at: execution1.started_at,
+    },
+    'EXECUTION STARTED',
+  );
+
   await JobRepository.startJob(job.id);
 
-  // ONLY CLAIMED REACHES THE HANDLER
   const handler = handlerRegistry[job.type as JobType];
 
   if (!handler) {
-    await ExecutionRepository.failedExecution(
-      execution.id,
-      `No handler registered for type: ${job.type}`,
+    const errorMessage = `No handler registered for type: ${job.type}`;
+    const noHandlerClient = await pool.connect();
+    let noHandlerResult;
+
+    try {
+      await noHandlerClient.query('BEGIN');
+
+      await ExecutionRepository.failedExecution(noHandlerClient, execution.id, errorMessage);
+
+      noHandlerResult = await JobRepository.failedJob(noHandlerClient, job.id);
+
+      await noHandlerClient.query('COMMIT');
+    } catch (error) {
+      await noHandlerClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      noHandlerClient.release();
+    }
+
+    logger.error(
+      {
+        event: 'execution.failed',
+        executionId: execution.id,
+        jobId: job.id,
+        attempt: execution.attempt,
+        status: 'FAILED',
+        error: errorMessage,
+      },
+      'EXECUTION FAILED',
     );
 
-    await JobRepository.failedJob(job.id);
+    logger.error(
+      {
+        event: 'job.failed',
+        jobId: noHandlerResult.id,
+        type: noHandlerResult.type,
+        scheduleType: noHandlerResult.schedule_type,
+        maxAttempts: noHandlerResult.max_attempts,
+        status: noHandlerResult.status,
+      },
+      'JOB FAILED',
+    );
 
-    throw new AppError(`No handler registered for type: ${job.type}`, 500);
+    throw new AppError(errorMessage, 500);
   }
 
-  // run handler if it fails run the logic to check if the more execution exists or not
+  const controller = new AbortController();
+
+  let timeoutTriggered = false;
+
+  const timeout = setTimeout(() => {
+    timeoutTriggered = true;
+    controller.abort();
+  }, config.execution.timeout);
+
   try {
-    await handler(job.payload ?? {});
+    await handler(job.payload ?? {}, controller.signal);
   } catch (error) {
+    // Handle execution timeout separately
+    if (timeoutTriggered) {
+      // Timeout with retry
+      if (execution.attempt < job.max_attempts) {
+        const retryTimeoutClient = await pool.connect();
+
+        try {
+          await retryTimeoutClient.query('BEGIN');
+
+          await ExecutionRepository.timedOutExecution(retryTimeoutClient, execution.id);
+
+          await IdempotencyRepository.resetToPending(retryTimeoutClient, idempotencyKey);
+
+          const nextAttempt = execution.attempt + 1;
+          const retryNumber = nextAttempt - 1;
+          const retryAt = calculateRetryAt(retryNumber);
+
+          const newExecution = await ExecutionRepository.newExecution(
+            retryTimeoutClient,
+            job.id,
+            nextAttempt,
+            retryAt,
+            'SCHEDULED',
+          );
+
+          if (!newExecution) {
+            throw new AppError('Error generating the retry execution', 500);
+          }
+
+          await retryTimeoutClient.query('COMMIT');
+
+          logger.warn(
+            {
+              event: 'execution.timed_out',
+              executionId: execution.id,
+              jobId: execution.job_id,
+              attempt: execution.attempt,
+              status: 'TIMED_OUT',
+            },
+            'EXECUTION TIMED OUT',
+          );
+
+          logger.info(
+            {
+              event: 'execution.retry_scheduled',
+              jobId: newExecution.job_id,
+              failedExecutionId: execution.id,
+              retryExecutionId: newExecution.id,
+              attempt: newExecution.attempt,
+              retryAt: newExecution.retry_at,
+            },
+            'EXECUTION RETRY SCHEDULED',
+          );
+
+          return false;
+        } catch (error) {
+          await retryTimeoutClient.query('ROLLBACK');
+          throw error;
+        } finally {
+          retryTimeoutClient.release();
+        }
+      }
+
+      // Final timeout
+      const client = await pool.connect();
+
+      try {
+        await client.query('BEGIN');
+
+        await ExecutionRepository.timedOutExecution(client, execution.id);
+
+        const result = await JobRepository.failedJob(client, job.id);
+
+        await client.query('COMMIT');
+
+        logger.warn(
+          {
+            event: 'execution.timed_out',
+            executionId: execution.id,
+            jobId: execution.job_id,
+            attempt: execution.attempt,
+            status: 'TIMED_OUT',
+          },
+          'EXECUTION TIMED OUT',
+        );
+
+        logger.error(
+          {
+            event: 'job.failed',
+            jobId: result.id,
+            type: result.type,
+            scheduleType: result.schedule_type,
+            maxAttempts: result.max_attempts,
+            status: result.status,
+          },
+          'JOB FAILED',
+        );
+
+        return false;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    // Normal execution failure
     const errorMessage = error instanceof Error ? error.message : 'Unknown execution error';
 
     console.error(`Error running execution ${execution.id}:`, error);
 
-    // Current execution failed.
-    await ExecutionRepository.failedExecution(execution.id, errorMessage);
-
-    // Retry if attempts remain.
     if (execution.attempt < job.max_attempts) {
-      // Reset the claim so the retry can re-acquire it.
-      await IdempotencyRepository.resetToPending(idempotencyKey);
+      // Failure with retry
+      const retryClient = await pool.connect();
 
-      const nextAttempt = execution.attempt + 1;
-      const retryNumber = nextAttempt - 1;
+      try {
+        await retryClient.query('BEGIN');
 
-      const retryAt = calculateRetryAt(retryNumber);
+        const execution2 = await ExecutionRepository.failedExecution(
+          retryClient,
+          execution.id,
+          errorMessage,
+        );
 
-      const newExecution = await ExecutionRepository.newExecution(
-        job.id,
-        nextAttempt,
-        retryAt,
-        'SCHEDULED',
-      );
+        await IdempotencyRepository.resetToPending(retryClient, idempotencyKey);
 
-      if (!newExecution) {
-        throw new AppError('Error generating the retry execution', 500);
+        const nextAttempt = execution.attempt + 1;
+        const retryNumber = nextAttempt - 1;
+        const retryAt = calculateRetryAt(retryNumber);
+
+        const newExecution = await ExecutionRepository.newExecution(
+          retryClient,
+          job.id,
+          nextAttempt,
+          retryAt,
+          'SCHEDULED',
+        );
+
+        if (!newExecution) {
+          throw new AppError('Error generating the retry execution', 500);
+        }
+
+        await retryClient.query('COMMIT');
+
+        logger.error(
+          {
+            event: 'execution.failed',
+            executionId: execution2.id,
+            jobId: execution2.job_id,
+            attempt: execution2.attempt,
+            status: execution2.status,
+            started_at: execution2.started_at,
+            completed_at: execution2.completed_at,
+            error: execution2.error,
+          },
+          'EXECUTION FAILED',
+        );
+
+        logger.info(
+          {
+            event: 'execution.retry_scheduled',
+            jobId: newExecution.job_id,
+            failedExecutionId: execution.id,
+            retryExecutionId: newExecution.id,
+            attempt: newExecution.attempt,
+            retryAt: newExecution.retry_at,
+          },
+          'EXECUTION RETRY SCHEDULED',
+        );
+
+        return false;
+      } catch (error) {
+        await retryClient.query('ROLLBACK');
+        throw error;
+      } finally {
+        retryClient.release();
       }
-
-      return false;
     }
 
-    // No attempts remaining.
-    await JobRepository.failedJob(job.id);
+    // Final failure
+    const finalFailureClient = await pool.connect();
 
-    return false;
+    try {
+      await finalFailureClient.query('BEGIN');
+
+      const execution2 = await ExecutionRepository.failedExecution(
+        finalFailureClient,
+        execution.id,
+        errorMessage,
+      );
+
+      const result = await JobRepository.failedJob(finalFailureClient, job.id);
+
+      await finalFailureClient.query('COMMIT');
+
+      logger.error(
+        {
+          event: 'execution.failed',
+          executionId: execution2.id,
+          jobId: execution2.job_id,
+          attempt: execution2.attempt,
+          status: execution2.status,
+          started_at: execution2.started_at,
+          completed_at: execution2.completed_at,
+          error: execution2.error,
+        },
+        'EXECUTION FAILED',
+      );
+
+      logger.error(
+        {
+          event: 'job.failed',
+          jobId: result.id,
+          type: result.type,
+          scheduleType: result.schedule_type,
+          maxAttempts: result.max_attempts,
+          status: result.status,
+        },
+        'JOB FAILED',
+      );
+
+      return false;
+    } catch (error) {
+      await finalFailureClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      finalFailureClient.release();
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 
   const client = await pool.connect();
 
-  // running the transaction to change the records togethere
   try {
     await client.query('BEGIN');
 
     await IdempotencyRepository.completeIdempotency(client, idempotencyKey);
-    await ExecutionRepository.successExecution(client, execution.id);
-    await JobRepository.successJob(client, job.id);
+
+    const execution3 = await ExecutionRepository.successExecution(client, execution.id);
+
+    const result = await JobRepository.successJob(client, job.id);
 
     await client.query('COMMIT');
+
+    logger.info(
+      {
+        event: 'execution.completed',
+        executionId: execution3.id,
+        jobId: execution3.job_id,
+        attempt: execution3.attempt,
+        status: execution3.status,
+      },
+      'EXECUTION COMPLETED',
+    );
+
+    logger.info(
+      {
+        event: 'job.completed',
+        jobId: result.id,
+        type: result.type,
+        scheduleType: result.schedule_type,
+        maxAttempts: result.max_attempts,
+        status: result.status,
+      },
+      'JOB COMPLETED',
+    );
 
     return true;
   } catch (error) {
     await client.query('ROLLBACK');
+    throw error;
   } finally {
     client.release();
   }

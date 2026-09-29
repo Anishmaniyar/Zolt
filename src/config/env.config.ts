@@ -23,6 +23,8 @@ const envSchema = z.object({
   SCHEDULER_ID: z.string().default('unknown-scheduler'),
 
   IDEMPOTENCY_PROCESSING_TIMEOUT_MS: z.coerce.number(),
+
+  EXECUTION_TIMEOUT_MS: z.coerce.number().int().positive(),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -65,5 +67,9 @@ export const config = Object.freeze({
 
   idempotemcy: Object.freeze({
     processingTimeout: env.IDEMPOTENCY_PROCESSING_TIMEOUT_MS,
+  }),
+
+  execution: Object.freeze({
+    timeout: env.EXECUTION_TIMEOUT_MS,
   }),
 });

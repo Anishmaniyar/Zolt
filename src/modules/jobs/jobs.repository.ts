@@ -197,8 +197,8 @@ export const successJob = async (client: PoolClient, jobId: string) => {
   return result.rows[0];
 };
 
-export const failedJob = async (jobId: string) => {
-  const result = await pool.query(
+export const failedJob = async (client: PoolClient, jobId: string) => {
+  const result = await client.query(
     `
       UPDATE jobs
       SET
