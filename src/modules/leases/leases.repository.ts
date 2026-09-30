@@ -2,18 +2,7 @@ import { pool } from '../../infrastructure/database/pool.js';
 import AppError from '../../shared/errors/appError.js';
 import type { PoolClient } from 'pg';
 
-/**
- * Answers one question: can this worker own this execution right now?
- *
- * Returns the lease row when acquired, null when another worker validly
- * owns it or the execution is not QUEUED. A conflict is a normal
- * concurrency outcome, not an error, so it returns null instead of
- * throwing. Only a missing execution throws.
- *
- * The SELECT ... FOR UPDATE on the execution row serializes concurrent
- * acquirers: the loser blocks until the winner commits, then reads the
- * winner's lease and returns null.
- */
+// Acquires the lease for a QUEUED execution, or returns null when another worker validly owns it.
 export const acquireExecutionLease = async (
   executionId: string,
   workerId: string,
@@ -102,9 +91,7 @@ export const acquireExecutionLease = async (
   }
 };
 
-/**
- * Fetches the lease for an execution, if one exists.
- */
+// Finds the lease holding an execution, if one exists.
 export const findLeaseByExecutionId = async (executionId: string) => {
   const result = await pool.query(
     `
@@ -118,10 +105,7 @@ export const findLeaseByExecutionId = async (executionId: string) => {
   return result.rows[0] ?? null;
 };
 
-/**
- * Locked read of the lease for use inside a transaction, so the
- * expiry re-check and the recovery writes happen atomically.
- */
+// Locks a lease row so its expiry can be safely re-checked inside a recovery transaction.
 export const findLeaseByExecutionIdForUpdate = async (client: PoolClient, executionId: string) => {
   const result = await client.query(
     `
@@ -136,13 +120,7 @@ export const findLeaseByExecutionIdForUpdate = async (client: PoolClient, execut
   return result.rows[0] ?? null;
 };
 
-/**
- * Extends the lease only if this worker still owns a valid one.
- *
- * Returns the renewed row, or null when the lease expired, moved to
- * another worker, or never existed. Losing ownership is a meaningful
- * state, not a database error, so null is returned instead of throwing.
- */
+// Renews the lease if this worker still owns the execution and the lease has not expired.
 export const renewLease = async (
   executionId: string,
   workerId: string,
@@ -165,10 +143,7 @@ export const renewLease = async (
   return result.rows[0] ?? null;
 };
 
-/**
- * Finds expired leases with their execution status for detection.
- * Recovery is a separate step; this only reports what expired.
- */
+// Finds leases whose expiry has passed along with their execution status.
 export const findExpiredLeases = async () => {
   const result = await pool.query(
     `

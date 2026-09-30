@@ -9,6 +9,7 @@ import { closeDatabase } from '../infrastructure/database/pool.js';
 // Boot an isolated scheduler engine thread
 startScheduler();
 
+// Stops the scheduler plus queue, Redis, and Postgres connections, then exits.
 async function gracefulShutdown(signal: string) {
   console.log(`${signal} received. Shutting down scheduler...`);
 

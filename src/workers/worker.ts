@@ -24,6 +24,7 @@ console.log(`📡 [${config.worker.id}] worker booted (Concurrency: ${config.wor
 
 const worker = new Worker(
   'jobs',
+  // Routes queued BullMQ jobs to execution creation or execution running.
   async (job) => {
     switch (job.name) {
       case 'execute-job': {
@@ -112,6 +113,7 @@ const worker = new Worker(
 
 startHeartbeat();
 
+// Stops the heartbeat, closes the worker and its Redis connection, then exits.
 async function gracefulShutdown(signal: string) {
   logger.info(
     {

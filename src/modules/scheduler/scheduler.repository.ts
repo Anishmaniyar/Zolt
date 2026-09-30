@@ -30,6 +30,7 @@ import * as OutboxRepository from '../outbox/outbox.repository.js';
 //   return result.rows;
 // };
 
+// Claims due SCHEDULED jobs into QUEUED and writes their outbox rows in one transaction.
 export const processJobTransaction = async (batch: number) => {
   const client = await pool.connect();
 
@@ -69,6 +70,7 @@ export const processJobTransaction = async (batch: number) => {
   }
 };
 
+// Claims due SCHEDULED executions into QUEUED and writes their outbox rows in one transaction.
 export const processExecutionTransactions = async (batch: number) => {
   const client = await pool.connect();
 

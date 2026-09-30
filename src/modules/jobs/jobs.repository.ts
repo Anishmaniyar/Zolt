@@ -16,10 +16,7 @@ export interface CreateJobWithIdempotencyData {
   idempotencyKey: string;
 }
 
-/**
- * Creates the job and its idempotency record in one PostgreSQL transaction.
- * If either insert fails, both are rolled back.
- */
+// Creates a job and its PENDING idempotency record in one transaction.
 export const createJobWithIdempotency = async (data: CreateJobWithIdempotencyData) => {
   const client = await pool.connect();
 
@@ -73,10 +70,7 @@ export const createJobWithIdempotency = async (data: CreateJobWithIdempotencyDat
   }
 };
 
-/**
- * Fetches a job by id. The idempotency key is resolved separately through
- * IdempotencyRepository.getByJobId(), so this stays a plain jobs lookup.
- */
+// Finds a job by its ID.
 export const getJobById = async (id: string) => {
   const result = await pool.query(
     `
@@ -89,6 +83,7 @@ export const getJobById = async (id: string) => {
 
   return result.rows[0];
 };
+// Lists jobs with optional status filter, sorting, and pagination.
 export const getJobs = async (query: GetJobsQuery) => {
   // 1. Fall back to safe defaults if parameters are missing
   const page = query.page || 1;
@@ -164,6 +159,7 @@ export const getJobs = async (query: GetJobsQuery) => {
   };
 };
 
+// Marks a SCHEDULED job as CANCELLED.
 export const cancelJobStatus = async (id: string) => {
   const result = await pool.query(
     `
@@ -181,6 +177,7 @@ export const cancelJobStatus = async (id: string) => {
   return result.rows[0];
 };
 
+// Marks a job as COMPLETED inside an existing transaction.
 export const successJob = async (client: PoolClient, jobId: string) => {
   const result = await client.query(
     `
@@ -197,6 +194,7 @@ export const successJob = async (client: PoolClient, jobId: string) => {
   return result.rows[0];
 };
 
+// Marks a job as FAILED inside an existing transaction.
 export const failedJob = async (client: PoolClient, jobId: string) => {
   const result = await client.query(
     `
@@ -213,6 +211,7 @@ export const failedJob = async (client: PoolClient, jobId: string) => {
   return result.rows[0];
 };
 
+// Moves a QUEUED job to RUNNING when its first execution starts.
 export const startJob = async (jobId: string) => {
   // QUEUED -> RUNNING only. Retries find the job already RUNNING,
   // so they get 0 rows back — that is intentional and not an error.

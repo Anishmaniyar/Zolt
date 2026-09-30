@@ -3,6 +3,7 @@ import { workerRedisConnection } from '../workers/worker.js'; // adjust if your 
 
 const testQueue = new Queue('jobs', { connection: workerRedisConnection });
 
+// Pushes 10 test execute-job messages onto the jobs queue for local worker testing.
 async function spamJobs() {
   console.log('🚀 Pushing 10 test jobs with valid UUID syntax...');
 

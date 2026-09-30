@@ -10,6 +10,7 @@ export interface HealthReport {
   };
 }
 
+// Checks Postgres and Redis reachability and reports the overall system health.
 export async function checkSystemHealth(): Promise<HealthReport> {
   let database: 'UP' | 'DOWN' = 'DOWN';
   let redisStatus: 'UP' | 'DOWN' = 'DOWN';

@@ -2,7 +2,9 @@ import type { RequestHandler } from 'express';
 import { ZodError, type ZodType } from 'zod';
 import AppError from '../shared/errors/appError.js';
 
+// Validates body, query, and params against a Zod schema before the controller runs.
 export const validateRequest = (schema: ZodType): RequestHandler => {
+  // Parses the incoming request and replaces it with the validated body, query, and params.
   return async (req, res, next) => {
     try {
       const parsed = await schema.parseAsync({

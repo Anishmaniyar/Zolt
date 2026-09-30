@@ -9,6 +9,7 @@ export default class AppError extends Error implements errorType {
   status: string;
   isOperational: boolean;
 
+  // Creates an operational error with an HTTP status code and fail/error status.
   constructor(message: string, statusCode: number) {
     super(message);
 

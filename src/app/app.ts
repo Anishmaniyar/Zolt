@@ -13,6 +13,7 @@ const app = express();
 
 app.use(express.json());
 
+// Serves the health probe by reporting Postgres and Redis reachability.
 app.get('/health', async (req, res, next) => {
   try {
     const health = await checkSystemHealth();

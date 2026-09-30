@@ -5,6 +5,7 @@ import { GetJobsQuery } from './jobs.types.js';
 import * as ExecutionService from '../executions/execution.service.js';
 import { logger } from '../../shared/logger/logger.js';
 
+// Handles POST /jobs by creating a new job.
 export const createJobController = asyncHandler(
   async (req: Request, res: Response, next: NextFunction) => {
     const result = await JobService.createJobService(req.body);
@@ -29,6 +30,7 @@ export const createJobController = asyncHandler(
   },
 );
 
+// Handles GET /jobs/:id by returning a single job.
 export const getJobByIdController = asyncHandler(
   async (req: Request, res: Response, next: NextFunction) => {
     const { id } = req.params;
@@ -43,6 +45,7 @@ export const getJobByIdController = asyncHandler(
   },
 );
 
+// Handles GET /jobs by returning filtered and paginated jobs.
 export const getJobsController = asyncHandler(async (req: Request, res: Response) => {
   const query = req.query as unknown as GetJobsQuery;
 
@@ -56,6 +59,7 @@ export const getJobsController = asyncHandler(async (req: Request, res: Response
   });
 });
 
+// Handles POST /jobs/:id/cancel by cancelling a scheduled job.
 export const cancelJobController = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
 
@@ -79,6 +83,7 @@ export const cancelJobController = asyncHandler(async (req: Request, res: Respon
   });
 });
 
+// Handles GET /jobs/:id/executions by returning all executions of a job.
 export const getJobExecutionsController = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
 

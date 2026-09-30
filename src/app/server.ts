@@ -6,6 +6,7 @@ import { closeDatabase } from '../infrastructure/database/pool.js';
 
 const PORT = config.server.port;
 
+// Configures the queue, starts the HTTP server, and wires graceful shutdown signals.
 async function startServer() {
   try {
     await configureQueue();
@@ -14,6 +15,7 @@ async function startServer() {
       console.log(`Server is running smoothly on port ${PORT} in development mode`);
     });
 
+    // Closes the HTTP server plus Redis, Postgres, and queue connections, then exits.
     const shutdown = async (signal: string) => {
       console.log(`${signal} received. Shutting down ...`);
 

@@ -1,3 +1,4 @@
+// Simulates creating a campaign for a CREATE_CAMPAIGN job payload.
 export const campaignHandler = async (payload: any, signal: AbortSignal) => {
   console.log('CAMPAIGN JOB STARTED');
   console.log('Data: ', payload);

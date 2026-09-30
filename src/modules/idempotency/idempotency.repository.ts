@@ -4,10 +4,7 @@ import type { PoolClient } from 'pg';
 
 export type IdempotencyClaimResult = 'CLAIMED' | 'ALREADY_PROCESSING' | 'ALREADY_COMPLETED';
 
-/**
- * Fetches the idempotency record for a job. The key lives on the
- * idempotency record, not on the job, so it is resolved here.
- */
+// Finds the idempotency record guarding a job.
 export const getByJobId = async (jobId: string) => {
   const result = await pool.query(
     `
@@ -21,9 +18,7 @@ export const getByJobId = async (jobId: string) => {
   return result.rows[0] ?? null;
 };
 
-/**
- * Locked read of the idempotency record for use inside a transaction.
- */
+// Locks an idempotency record so its state can be safely checked or changed inside a transaction.
 export const getByJobIdForUpdate = async (client: PoolClient, jobId: string) => {
   const result = await client.query(
     `
@@ -38,13 +33,7 @@ export const getByJobIdForUpdate = async (client: PoolClient, jobId: string) => 
   return result.rows[0] ?? null;
 };
 
-/**
- * Atomically transitions PENDING -> PROCESSING.
- *
- * The status check happens inside the UPDATE statement, so PostgreSQL
- * guarantees only one caller can win the claim for a given key. Losers
- * get rowCount = 0 and then inspect the record to learn why.
- */
+// Atomically claims a PENDING idempotency record for processing, or reports its existing state.
 export const claimIdempotency = async (idempotencyKey: string): Promise<IdempotencyClaimResult> => {
   const result = await pool.query(
     `
@@ -83,9 +72,7 @@ export const claimIdempotency = async (idempotencyKey: string): Promise<Idempote
   return 'ALREADY_PROCESSING';
 };
 
-/**
- * Marks the record as COMPLETED once the handler has succeeded.
- */
+// Marks an idempotency record as COMPLETED after its handler succeeds.
 export const completeIdempotency = async (
   client: PoolClient,
   idempotencyKey: string,
@@ -105,10 +92,7 @@ export const completeIdempotency = async (
   }
 };
 
-/**
- * Resets a claim to PENDING when the handler fails but attempts remain,
- * so the queued retry execution can claim the record again.
- */
+// Resets a PROCESSING record to PENDING so a scheduled retry can claim it again.
 export const resetToPending = async (client: PoolClient, idempotencyKey: string): Promise<void> => {
   const result = await client.query(
     `
@@ -125,6 +109,7 @@ export const resetToPending = async (client: PoolClient, idempotencyKey: string)
   }
 };
 
+// Finds PROCESSING records stuck past the timeout that may need recovery.
 export const getStaleProcessingRecords = async (timeout: number) => {
   const result = await pool.query(
     `
@@ -139,14 +124,7 @@ export const getStaleProcessingRecords = async (timeout: number) => {
   return result.rows;
 };
 
-/**
- * Resets a stale PROCESSING record to PENDING so it can be claimed again.
- *
- * The timeout check is repeated inside the UPDATE, so a record that was
- * freshly (re-)claimed between the SELECT and this UPDATE is not reset:
- * only rows still older than the timeout are touched. Returns the number
- * of rows reset (0 = lost the race, nothing to do).
- */
+// Resets a stale PROCESSING record to PENDING so it can be claimed again.
 export const resetStaleProcessingRecord = async (recordId: string, timeoutMs: number) => {
   const result = await pool.query(
     `

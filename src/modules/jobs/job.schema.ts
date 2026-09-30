@@ -15,6 +15,7 @@ export const createJobSchema = z.object({
 
       max_attempts: z.number().int().min(1).default(3),
     })
+    // Enforces that run_at is required for ONCE jobs and forbidden for IMMEDIATE jobs.
     .superRefine((data, ctx) => {
       if (data.schedule_type === 'ONCE' && !data.run_at) {
         ctx.addIssue({

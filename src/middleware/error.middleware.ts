@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 
+// Converts thrown errors into JSON responses, hiding non-operational error details.
 export const globalErrorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';

@@ -8,6 +8,7 @@ const activeExecutions = new Map<string, string>();
 
 let heartbeatInterval: NodeJS.Timeout | undefined;
 
+// Tracks an execution as actively owned by this worker so its lease gets renewed.
 export const registerExecution = (
   executionId: string,
   workerId: string = config.worker.id,
@@ -15,10 +16,12 @@ export const registerExecution = (
   activeExecutions.set(executionId, workerId);
 };
 
+// Stops tracking an execution so its lease is no longer renewed.
 export const unregisterExecution = (executionId: string) => {
   activeExecutions.delete(executionId);
 };
 
+// Periodically renews the leases of executions currently being handled by this worker.
 const renewActiveLeases = async () => {
   for (const [executionId, workerId] of activeExecutions) {
     try {
@@ -60,6 +63,7 @@ const renewActiveLeases = async () => {
   }
 };
 
+// Starts the background timer that keeps owned execution leases alive.
 export const startHeartbeat = (intervalMs: number = config.lease.heartbeatInterval) => {
   if (heartbeatInterval) return;
 
@@ -77,6 +81,7 @@ export const startHeartbeat = (intervalMs: number = config.lease.heartbeatInterv
   }, intervalMs);
 };
 
+// Stops the background lease-renewal timer.
 export const stopHeartbeat = () => {
   if (!heartbeatInterval) return;
 

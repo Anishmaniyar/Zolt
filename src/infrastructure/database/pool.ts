@@ -13,6 +13,7 @@ pool.on('error', (error) => {
   console.error('Unexpected PostgreSQL pool error:', error);
 });
 
+// Closes all pooled Postgres connections.
 export async function closeDatabase() {
   await pool.end();
 }

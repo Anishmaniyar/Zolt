@@ -1,3 +1,4 @@
+// Simulates sending an email for a SEND_EMAIL job payload.
 export const emailHandler = async (payload: any, signal: AbortSignal) => {
   console.log('EMAIL JOB STARTED');
   console.log('Data: ', payload);

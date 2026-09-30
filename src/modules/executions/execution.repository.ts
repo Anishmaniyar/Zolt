@@ -1,6 +1,7 @@
 import { pool } from '../../infrastructure/database/pool.js';
 import type { PoolClient } from 'pg';
 
+// Creates a retry/recovery execution for a job inside an existing transaction.
 export const newExecution = async (
   client: PoolClient,
   jobId: string,
@@ -26,6 +27,7 @@ export const newExecution = async (
   return result.rows[0] ?? null;
 };
 
+// Creates the first QUEUED execution for a newly submitted job.
 export const newInitialExecution = async (
   jobId: string,
   attempt: number,
@@ -50,6 +52,7 @@ export const newInitialExecution = async (
   return result.rows[0] ?? null;
 };
 
+// Marks an execution as FAILED with its error message.
 export const failedExecution = async (
   client: PoolClient,
   executionId: string,
@@ -72,6 +75,7 @@ export const failedExecution = async (
   return result.rows[0];
 };
 
+// Marks an execution as COMPLETED.
 export const successExecution = async (client: PoolClient, executionId: string) => {
   const result = await client.query(
     `
@@ -89,6 +93,7 @@ export const successExecution = async (client: PoolClient, executionId: string) 
   return result.rows[0];
 };
 
+// Finds an execution by its ID.
 export const getExecutionById = async (executionId: string) => {
   const result = await pool.query(
     `
@@ -102,6 +107,7 @@ export const getExecutionById = async (executionId: string) => {
   return result.rows[0] ?? null;
 };
 
+// Locks an execution row so its state can be safely checked or changed inside a transaction.
 export const getExecutionByIdForUpdate = async (client: PoolClient, executionId: string) => {
   const result = await client.query(
     `
@@ -116,6 +122,7 @@ export const getExecutionByIdForUpdate = async (client: PoolClient, executionId:
   return result.rows[0] ?? null;
 };
 
+// Lists all executions of a job ordered by attempt number.
 export const getExecutionsByJobId = async (jobId: string) => {
   const result = await pool.query(
     `
@@ -130,6 +137,7 @@ export const getExecutionsByJobId = async (jobId: string) => {
   return result.rows;
 };
 
+// Marks an execution as RUNNING and records its start time.
 export const startExecution = async (executionId: string) => {
   const result = await pool.query(
     `
@@ -147,6 +155,7 @@ export const startExecution = async (executionId: string) => {
   return result.rows[0];
 };
 
+// Marks an execution as TIMED_OUT when its handler exceeds the execution timeout.
 export const timedOutExecution = async (client: PoolClient, executionId: string) => {
   const result = await client.query(
     `
@@ -164,6 +173,7 @@ export const timedOutExecution = async (client: PoolClient, executionId: string)
   return result.rows[0];
 };
 
+// Marks a RUNNING execution as WORKER_CRASHED after its lease expired.
 export const markWorkerCrashed = async (client: PoolClient, executionId: string) => {
   const result = await client.query(
     `

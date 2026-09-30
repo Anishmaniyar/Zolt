@@ -35,6 +35,7 @@ export interface ExecutionInterface {
   updated_at: Date;
 }
 
+// Creates the first execution for a job and runs it immediately on this worker.
 export const createNewExecution = async (job: JobForExecution, workerId: string = config.worker.id) => {
   const execution = await ExecutionRepository.newInitialExecution(job.id, 1, null, 'QUEUED');
 
@@ -58,6 +59,9 @@ export const createNewExecution = async (job: JobForExecution, workerId: string 
   return true;
 };
 
+// Executes an existing queued execution.
+// Acquires the lease, claims idempotency, starts the execution and job,
+// runs the registered handler, and handles success, failure, timeout, and retry paths.
 export const executeExistingExecution = async (
   executionId: string,
   workerId: string = config.worker.id,
@@ -521,19 +525,9 @@ export const executeExistingExecution = async (
   }
 };
 
-/**
- * Recovers a RUNNING execution whose worker lease expired.
- *
- * Idempotency COMPLETED (handler finished, worker died before marking
- * it) finalizes execution + job. Idempotency PROCESSING (worker died
- * mid-run) marks the execution WORKER_CRASHED and creates the next
- * execution plus its outbox record in the same transaction. Anything
- * else is skipped: a missing record or unexpected status is an
- * invariant failure that must not spawn executions.
- *
- * Returns true when a recovery action was committed, false when there
- * was nothing to recover (already finished, lease renewed, invariant).
- */
+// Recovers an execution whose worker lease has expired.
+// Verifies the execution and lease state, checks idempotency,
+// then either completes the existing execution or creates a replacement execution.
 export const recoverExpiredExecution = async (executionId: string) => {
   const client = await pool.connect();
 
@@ -690,6 +684,7 @@ export const recoverExpiredExecution = async (executionId: string) => {
   }
 };
 
+// Lists all executions belonging to a job.
 export const getJobExecutionsService = async (data: { id: string }) => {
   const job = await JobRepository.getJobById(data.id);
 

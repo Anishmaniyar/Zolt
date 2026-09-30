@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { pool } from '../../infrastructure/database/pool.js';
 
+// Writes a PENDING outbox row so a claimed job is later published to BullMQ.
 export const createJobOutbox = async (client: PoolClient, jobId: string) => {
   const query = `
     INSERT INTO outbox (job_id, status)
@@ -13,6 +14,7 @@ export const createJobOutbox = async (client: PoolClient, jobId: string) => {
   return result.rows[0];
 };
 
+// Writes a PENDING outbox row so a claimed execution is later published to BullMQ.
 export const createExecutionOutbox = async (client: PoolClient, executionId: string) => {
   const query = `
     INSERT INTO outbox (execution_id, status)
@@ -25,6 +27,7 @@ export const createExecutionOutbox = async (client: PoolClient, executionId: str
   return result.rows[0];
 };
 
+// Atomically claims PENDING outbox rows so only one scheduler publishes each row.
 export const claimPendingOutbox = async (limit: number) => {
   // Atomic claim: only one scheduler wins each row thanks to
   // FOR UPDATE SKIP LOCKED. Row moves PENDING -> PUBLISHED here,
@@ -53,6 +56,7 @@ export const claimPendingOutbox = async (limit: number) => {
   return result.rows;
 };
 
+// Returns claimed outbox rows to PENDING after a failed BullMQ enqueue so the next tick retries them.
 export const resetOutboxToPending = async (outboxIds: string[]) => {
   // Called only when the Redis enqueue AFTER the claim throws,
   // so the next tick can retry. Without this a crash between

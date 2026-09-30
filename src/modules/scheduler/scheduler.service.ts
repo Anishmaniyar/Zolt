@@ -7,7 +7,7 @@ import * as LeaseRepository from '../leases/leases.repository.js';
 import * as ExecutionService from '../executions/execution.service.js';
 import { logger } from '../../shared/logger/logger.js';
 
-// fetches jobs from db
+// Claims jobs whose scheduled time has arrived and prepares them for queueing.
 const processDueJobs = async () => {
   try {
     const fetchAndClaimJobs = await SchedulerRepository.processJobTransaction(
@@ -43,7 +43,7 @@ const processDueJobs = async () => {
   }
 };
 
-// fetch executions from db
+// Claims retry executions whose retry time has arrived and prepares them for queueing.
 const processDueExecutions = async () => {
   try {
     const fetchAndClaimExecutions = await SchedulerRepository.processExecutionTransactions(
@@ -80,8 +80,8 @@ const processDueExecutions = async () => {
   }
 };
 
-// fetch the pending outbox rows and publish them.
-// This is the SOLE place that enqueues to BullMQ.
+// Publishes claimed outbox rows to BullMQ.
+// This is the sole place that enqueues jobs and executions to BullMQ.
 const processPendingOutbox = async () => {
   try {
     const claimedOutbox = await OutboxRepository.claimPendingOutbox(config.scheduler.batch);
@@ -135,6 +135,7 @@ const processPendingOutbox = async () => {
   }
 };
 
+// Resets idempotency records stuck in PROCESSING past the timeout so they can be retried.
 const processStaleIdempotency = async () => {
   try {
     const timeout = config.idempotemcy.processingTimeout;
@@ -258,6 +259,7 @@ const processExpiredLeases = async () => {
 
 let schedulerInterval: NodeJS.Timeout | undefined;
 
+// Starts the scheduler tick that claims due jobs, executions, outbox rows, and expired leases.
 export const startScheduler = () => {
   logger.info(
     {
@@ -268,6 +270,7 @@ export const startScheduler = () => {
     'SCHEDULER STARTED',
   );
 
+  // Runs one scheduler pass over due jobs, due executions, outbox, stale idempotency, and expired leases.
   const runTick = async () => {
     logger.info(
       {
@@ -293,6 +296,7 @@ export const startScheduler = () => {
   }, config.scheduler.intervalSize);
 };
 
+// Stops the scheduler tick loop.
 export const stopScheduler = () => {
   if (!schedulerInterval) {
     logger.info(

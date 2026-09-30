@@ -1,5 +1,6 @@
 import { retryConfig } from '../config/retry.config.js';
 
+// Computes the next retry time using exponential backoff with capped jittered delay.
 export function calculateRetryAt(attempt: number) {
   // Exponential backoff
   const exponentialDelay = retryConfig.baseDelay * retryConfig.exponentialBase ** (attempt - 1);

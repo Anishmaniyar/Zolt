@@ -3,6 +3,7 @@ import AppError from '../../shared/errors/appError.js';
 import * as JobRepository from './jobs.repository.js';
 import type { GetJobsQuery } from './jobs.types.js';
 
+// Creates a job with a fresh idempotency key, resolving its run time from the schedule type.
 export const createJobService = async (data: {
   title: string;
   type: string;
@@ -47,6 +48,7 @@ export const createJobService = async (data: {
   return job;
 };
 
+// Fetches a single job by its ID.
 export const getJobByIdService = async (data: { id: string }) => {
   const jobData = await JobRepository.getJobById(data.id);
 
@@ -57,12 +59,14 @@ export const getJobByIdService = async (data: { id: string }) => {
   return jobData;
 };
 
+// Lists jobs matching the given filters with pagination.
 export const getJobsService = async (query: GetJobsQuery) => {
   const data = await JobRepository.getJobs(query);
 
   return data;
 };
 
+// Cancels a SCHEDULED job so the scheduler never picks it up.
 export const cancelJobService = async (data: { id: string }) => {
   const job = await JobRepository.getJobById(data.id);
 
