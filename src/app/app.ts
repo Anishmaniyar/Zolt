@@ -1,34 +1,15 @@
-import dotenv from 'dotenv';
-dotenv.config();
+import express, { type Express } from 'express';
 
-import express from 'express';
-import { globalErrorHandler } from '../middleware/error.middleware.js';
+import { bootstrap } from '../bootstrap/index.js';
 
-import rootRouter from './routes.js';
-import { checkSystemHealth } from '../utils/health.service.js';
-import { requestLogger } from '../middleware/requestLogger.middlewares.js';
+// Builds a configured Express application without starting an HTTP listener.
+// Tests can call this to get an isolated app instance.
+export function createApp(): Express {
+  const app = express();
 
-const app = express();
+  bootstrap(app);
 
-app.use(express.json());
+  return app;
+}
 
-app.use(requestLogger);
-
-// Serves the health probe by reporting Postgres and Redis reachability.
-app.get('/health', async (req, res, next) => {
-  try {
-    const health = await checkSystemHealth();
-
-    res.status(health.status === 'UP' ? 200 : 503).json(health);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.use('/api/v1', rootRouter);
-
-//startScheduler();
-
-app.use(globalErrorHandler);
-
-export default app;
+export default createApp();
