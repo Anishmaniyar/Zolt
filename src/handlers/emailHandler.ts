@@ -1,16 +1,23 @@
-// Simulates sending an email for a SEND_EMAIL job payload.
-export const emailHandler = async (payload: any, signal: AbortSignal) => {
-  console.log('EMAIL JOB STARTED');
-  console.log('Data: ', payload);
+import { logger } from '../shared/logger/logger.js';
+import { getPayloadKeys, simulateHandlerBehaviour } from './handlerBehaviour.js';
+import { config } from '../config/env.config.js';
 
-  await new Promise((resolve) => setTimeout(resolve, 5000));
+export const emailHandler = async (payload: any, signal: AbortSignal, executionId: string) => {
+  logger.info(
+    { event: 'handler.started', handler: 'SEND_EMAIL', executionId, payloadKeys: getPayloadKeys(payload) },
+    'Send Email handler started',
+  );
 
-  console.log('EMAIL JOB DONE');
+  await simulateHandlerBehaviour({
+    normalDurationMs: 1_000,
+    slowDurationMs: 20_000,
+    executionId,
+    signal,
+    timeoutMs: config.execution.timeout,
+  });
+
+  logger.info(
+    { event: 'handler.completed', handler: 'SEND_EMAIL', executionId },
+    'Send Email handler completed',
+  );
 };
-
-// export const emailHandler = async (payload: Record<string, unknown>): Promise<void> => {
-//   console.log('EMAIL JOB STARTED');
-//   console.log('Data: ', payload);
-
-//   throw new Error('Simulated email delivery failure');
-// };

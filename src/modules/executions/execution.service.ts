@@ -11,7 +11,7 @@ import { logger } from '../../shared/logger/logger.js';
 import { config } from '../../config/env.config.js';
 import { registerExecution, unregisterExecution } from '../../workers/heartbeat.js';
 
-export type JobType = 'SEND_EMAIL' | 'CREATE_CAMPAIGN';
+export type JobType = keyof typeof handlerRegistry;
 
 export interface JobForExecution {
   id: string;
@@ -36,7 +36,10 @@ export interface ExecutionInterface {
 }
 
 // Creates the first execution for a job and runs it immediately on this worker.
-export const createNewExecution = async (job: JobForExecution, workerId: string = config.worker.id) => {
+export const createNewExecution = async (
+  job: JobForExecution,
+  workerId: string = config.worker.id,
+) => {
   const execution = await ExecutionRepository.newInitialExecution(job.id, 1, null, 'QUEUED');
 
   if (!execution) {
@@ -46,8 +49,8 @@ export const createNewExecution = async (job: JobForExecution, workerId: string 
   logger.info(
     {
       event: 'execution.created',
-      executionId: execution.id,
       jobId: execution.job_id,
+      executionId: execution.id,
       attempt: execution.attempt,
       status: execution.status,
     },
@@ -157,8 +160,8 @@ export const executeExistingExecution = async (
   logger.info(
     {
       event: 'execution.started',
-      executionId: execution1.id,
       jobId: execution1.job_id,
+      executionId: execution1.id,
       attempt: execution1.attempt,
       status: execution1.status,
       started_at: execution1.started_at,
@@ -194,8 +197,8 @@ export const executeExistingExecution = async (
     logger.error(
       {
         event: 'execution.failed',
-        executionId: execution.id,
         jobId: job.id,
+        executionId: execution.id,
         attempt: execution.attempt,
         status: 'FAILED',
         error: errorMessage,
@@ -230,7 +233,7 @@ export const executeExistingExecution = async (
   }, config.execution.timeout);
 
   try {
-    await handler(job.payload ?? {}, controller.signal);
+    await handler(job.payload ?? {}, controller.signal, executionId);
   } catch (error) {
     // Handle execution timeout separately
     if (timeoutTriggered) {
@@ -266,8 +269,8 @@ export const executeExistingExecution = async (
           logger.warn(
             {
               event: 'execution.timed_out',
-              executionId: execution.id,
               jobId: execution.job_id,
+              executionId: execution.id,
               attempt: execution.attempt,
               status: 'TIMED_OUT',
             },
@@ -313,8 +316,8 @@ export const executeExistingExecution = async (
         logger.warn(
           {
             event: 'execution.timed_out',
-            executionId: execution.id,
             jobId: execution.job_id,
+            executionId: execution.id,
             attempt: execution.attempt,
             status: 'TIMED_OUT',
           },
@@ -347,8 +350,6 @@ export const executeExistingExecution = async (
 
     // Normal execution failure
     const errorMessage = error instanceof Error ? error.message : 'Unknown execution error';
-
-    console.error(`Error running execution ${execution.id}:`, error);
 
     if (execution.attempt < job.max_attempts) {
       // Failure with retry
@@ -386,8 +387,8 @@ export const executeExistingExecution = async (
         logger.error(
           {
             event: 'execution.failed',
-            executionId: execution2.id,
             jobId: execution2.job_id,
+            executionId: execution2.id,
             attempt: execution2.attempt,
             status: execution2.status,
             started_at: execution2.started_at,
@@ -440,8 +441,8 @@ export const executeExistingExecution = async (
       logger.error(
         {
           event: 'execution.failed',
-          executionId: execution2.id,
           jobId: execution2.job_id,
+          executionId: execution2.id,
           attempt: execution2.attempt,
           status: execution2.status,
           started_at: execution2.started_at,
@@ -552,10 +553,7 @@ export const recoverExpiredExecution = async (executionId: string) => {
       return false;
     }
 
-    const idempotency = await IdempotencyRepository.getByJobIdForUpdate(
-      client,
-      execution.job_id,
-    );
+    const idempotency = await IdempotencyRepository.getByJobIdForUpdate(client, execution.job_id);
 
     if (!idempotency) {
       await client.query('ROLLBACK');
@@ -583,8 +581,8 @@ export const recoverExpiredExecution = async (executionId: string) => {
       logger.info(
         {
           event: 'execution.recovered',
-          executionId: execution2.id,
           jobId: execution2.job_id,
+          executionId: execution2.id,
           attempt: execution2.attempt,
           status: execution2.status,
           reason: 'idempotency_completed',
@@ -654,8 +652,8 @@ export const recoverExpiredExecution = async (executionId: string) => {
     logger.warn(
       {
         event: 'execution.worker_crashed',
-        executionId: crashed.id,
         jobId: crashed.job_id,
+        executionId: crashed.id,
         attempt: crashed.attempt,
         status: crashed.status,
         workerId: lease.worker_id,

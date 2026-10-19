@@ -1,5 +1,6 @@
 import { pool } from '../infrastructure/database/pool.js';
 import { redis } from '../infrastructure/redis/redis.js';
+import { logger } from '../shared/logger/logger.js';
 
 export interface HealthReport {
   status: 'UP' | 'DOWN';
@@ -20,7 +21,7 @@ export async function checkSystemHealth(): Promise<HealthReport> {
     await pool.query('SELECT 1');
     database = 'UP';
   } catch (error) {
-    console.error('Health check - Database failure: ', error);
+    logger.error({ event: 'health.check_failed', component: 'database', error }, 'HEALTH CHECK FAILED');
   }
 
   // check redis
@@ -31,7 +32,7 @@ export async function checkSystemHealth(): Promise<HealthReport> {
       redisStatus = 'UP';
     }
   } catch (error) {
-    console.error('Health check - Redis failure: ', error);
+    logger.error({ event: 'health.check_failed', component: 'redis', error }, 'HEALTH CHECK FAILED');
   }
 
   const overallStatus = database === 'UP' && redisStatus === 'UP' ? 'UP' : 'DOWN';

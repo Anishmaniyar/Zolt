@@ -5,6 +5,7 @@ import * as OutboxRepository from '../outbox/outbox.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
 import * as LeaseRepository from '../leases/leases.repository.js';
 import * as ExecutionService from '../executions/execution.service.js';
+import * as ReconciliationService from '../queue-reconciliation/queue-reconciliation.service.js';
 import { logger } from '../../shared/logger/logger.js';
 
 // Claims jobs whose scheduled time has arrived and prepares them for queueing.
@@ -34,7 +35,7 @@ const processDueJobs = async () => {
   } catch (error) {
     logger.error(
       {
-        event: 'scheduler.error',
+        event: 'scheduler.due_jobs.failed',
         schedulerId: config.scheduler.id,
         error,
       },
@@ -71,7 +72,7 @@ const processDueExecutions = async () => {
   } catch (error) {
     logger.error(
       {
-        event: 'scheduler.error',
+        event: 'scheduler.due_executions.failed',
         schedulerId: config.scheduler.id,
         error,
       },
@@ -124,7 +125,7 @@ const processPendingOutbox = async () => {
   } catch (error) {
     logger.error(
       {
-        event: 'scheduler.error',
+        event: 'scheduler.outbox.failed',
         schedulerId: config.scheduler.id,
         error,
       },
@@ -185,7 +186,7 @@ const processStaleIdempotency = async () => {
   } catch (error) {
     logger.error(
       {
-        event: 'scheduler.error',
+        event: 'scheduler.idempotency_processing.failed',
         schedulerId: config.scheduler.id,
         error,
       },
@@ -232,7 +233,7 @@ const processExpiredLeases = async () => {
       } catch (error) {
         logger.error(
           {
-            event: 'scheduler.error',
+            event: 'scheduler.lease_recovery.failed',
             schedulerId: config.scheduler.id,
             executionId: lease.execution_id,
             error,
@@ -246,7 +247,7 @@ const processExpiredLeases = async () => {
   } catch (error) {
     logger.error(
       {
-        event: 'scheduler.error',
+        event: 'scheduler.expired_leases.failed',
         schedulerId: config.scheduler.id,
         error,
       },
@@ -258,6 +259,19 @@ const processExpiredLeases = async () => {
 };
 
 let schedulerInterval: NodeJS.Timeout | undefined;
+
+let lastReconciliationAt = 0;
+
+// Requeues QUEUED jobs/executions missing from BullMQ. Throttled to the
+// reconciliation interval so it runs less often than the main scheduler tick.
+const processQueueReconciliation = async () => {
+  const now = Date.now();
+
+  if (now - lastReconciliationAt < config.queueReconciliation.interval) return;
+
+  lastReconciliationAt = now;
+  await ReconciliationService.processQueueReconciliation();
+};
 
 // Starts the scheduler tick that claims due jobs, executions, outbox rows, and expired leases.
 export const startScheduler = () => {
@@ -285,6 +299,7 @@ export const startScheduler = () => {
     await processPendingOutbox();
     await processStaleIdempotency();
     await processExpiredLeases();
+    await processQueueReconciliation();
   };
 
   // Run once immediately instead of waiting for the first interval.

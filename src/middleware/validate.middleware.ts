@@ -1,6 +1,7 @@
 import type { RequestHandler } from 'express';
 import { ZodError, type ZodType } from 'zod';
 import AppError from '../shared/errors/appError.js';
+import { logger } from '../shared/logger/logger.js';
 
 // Validates body, query, and params against a Zod schema before the controller runs.
 export const validateRequest = (schema: ZodType): RequestHandler => {
@@ -34,8 +35,16 @@ export const validateRequest = (schema: ZodType): RequestHandler => {
 
         const failedFields = error.issues.map((issue) => issue.path.join('.')).join(', ');
 
-        console.warn(
-          `[validate] 400 ${req.method} ${req.originalUrl} - invalid field(s): ${failedFields} (${errorMessage})`,
+        logger.warn(
+          {
+            event: 'http.validation_failed',
+            requestId: res.locals.requestId,
+            method: req.method,
+            path: req.originalUrl,
+            failedFields,
+            errorMessage,
+          },
+          'HTTP VALIDATION FAILED',
         );
 
         return next(new AppError(errorMessage, 400));

@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 
 import { config } from '../../config/env.config.js';
+import { logger } from '../../shared/logger/logger.js';
 
 export const pool = new Pool({
   connectionString: config.database.url,
@@ -10,7 +11,7 @@ export const pool = new Pool({
 });
 
 pool.on('error', (error) => {
-  console.error('Unexpected PostgreSQL pool error:', error);
+  logger.error({ event: 'db.pool_error', error }, 'DATABASE POOL ERROR');
 });
 
 // Closes all pooled Postgres connections.

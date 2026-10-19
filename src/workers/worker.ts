@@ -20,15 +20,12 @@ logger.info(
   'WORKER STARTED',
 );
 
-console.log(`📡 [${config.worker.id}] worker booted (Concurrency: ${config.worker.concurrency})`);
-
 const worker = new Worker(
   'jobs',
   // Routes queued BullMQ jobs to execution creation or execution running.
   async (job) => {
     switch (job.name) {
       case 'execute-job': {
-        console.log(`⏱️  [${config.worker.id}] STARTing Job #${job.id} - Type: ${job.name}`);
         logger.info(
           {
             event: 'worker.job_started',
@@ -53,7 +50,6 @@ const worker = new Worker(
 
         await ExecutionService.createNewExecution(jobData, config.worker.id);
 
-        console.log(`✅ [${config.worker.id}] ENDed Job #${job.id}`);
         logger.info(
           {
             event: 'worker.job_completed',
@@ -68,7 +64,6 @@ const worker = new Worker(
       }
 
       case 'execute-execution': {
-        console.log(`⏱️  [${config.worker.id}] STARTing Job #${job.id} - Type: ${job.name}`);
         logger.info(
           {
             event: 'worker.job_started',
@@ -87,7 +82,6 @@ const worker = new Worker(
 
         await ExecutionService.executeExistingExecution(executionId, config.worker.id);
 
-        console.log(`✅ [${config.worker.id}] ENDed Job #${job.id}`);
         logger.info(
           {
             event: 'worker.job_completed',

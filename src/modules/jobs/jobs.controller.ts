@@ -13,6 +13,7 @@ export const createJobController = asyncHandler(
     logger.info(
       {
         event: 'job.created',
+        requestId: res.locals.requestId,
         jobId: result.id,
         type: result.type,
         scheduleType: result.schedule_type,
@@ -68,6 +69,7 @@ export const cancelJobController = asyncHandler(async (req: Request, res: Respon
   logger.info(
     {
       event: 'job.cancelled',
+      requestId: res.locals.requestId,
       jobId: result.id,
       type: result.type,
       scheduleType: result.schedule_type,

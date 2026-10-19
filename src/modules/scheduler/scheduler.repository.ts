@@ -58,12 +58,10 @@ export const processJobTransaction = async (batch: number) => {
     }
 
     await client.query('COMMIT');
-    console.log(`Transaction committed! Claimed ${result.rows.length} jobs.`);
 
     return result.rows;
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Transaction failed! Aborted and rolled back.', error);
     throw error;
   } finally {
     client.release();
@@ -99,12 +97,10 @@ export const processExecutionTransactions = async (batch: number) => {
     }
 
     await client.query('COMMIT');
-    console.log(`Transaction committed! Claimed ${result.rows.length} Executions.`);
 
     return result.rows;
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Transaction failed! Aborted and rolled back.', error);
     throw error;
   } finally {
     client.release();

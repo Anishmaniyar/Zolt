@@ -1,6 +1,7 @@
 import { Queue, Job } from 'bullmq';
 import { redis } from '../../infrastructure/redis/redis.js';
 import { config } from '../../config/env.config.js';
+import { logger } from '../../shared/logger/logger.js';
 
 export const jobQueue = new Queue('jobs', {
   connection: redis,
@@ -31,11 +32,6 @@ export function getExecutionQueueId(executionId: string) {
   return `exec-${executionId}`;
 }
 
-// Finds a BullMQ job using its exact queue ID.
-export async function queueLookup(queueJobId: string): Promise<Job | undefined> {
-  return await jobQueue.getJob(queueJobId);
-}
-
 // Adds jobs to BullMQ for processing.
 export async function enqueueJobs(jobs: Array<{ id: string }>) {
   if (jobs.length === 0) return [];
@@ -57,7 +53,7 @@ export async function enqueueJobs(jobs: Array<{ id: string }>) {
     );
   } catch (error) {
     if (isDuplicateJobError(error)) {
-      console.warn('[queue] duplicate execute-job ignored (already queued)');
+      logger.warn({ event: 'queue.duplicate_job_skipped', jobKind: 'execute-job' }, 'QUEUE DUPLICATE JOB SKIPPED');
 
       return [];
     }
@@ -86,13 +82,44 @@ export async function enqueueExecutions(executions: Array<{ id: string }>) {
     );
   } catch (error) {
     if (isDuplicateJobError(error)) {
-      console.warn('[queue] duplicate execute-execution ignored (already queued)');
+      logger.warn(
+        { event: 'queue.duplicate_job_skipped', jobKind: 'execute-execution' },
+        'QUEUE DUPLICATE JOB SKIPPED',
+      );
 
       return [];
     }
 
     throw error;
   }
+}
+
+// Finds a BullMQ job for a DB job ID using its deterministic queue ID.
+export async function getQueueJob(jobId: string): Promise<Job | null> {
+  const job = await jobQueue.getJob(getJobQueueId(jobId));
+
+  return job ?? null;
+}
+
+// Finds a BullMQ job for a DB execution ID using its deterministic queue ID.
+export async function getQueueExecution(executionId: string): Promise<Job | null> {
+  const job = await jobQueue.getJob(getExecutionQueueId(executionId));
+
+  return job ?? null;
+}
+
+export async function isQueueEntryRunnable(job: Job | null): Promise<boolean> {
+  if (!job) return false;
+
+  const state = await job.getState();
+
+  return (
+    state === 'waiting' ||
+    state === 'active' ||
+    state === 'delayed' ||
+    state === 'prioritized' ||
+    state === 'waiting-children'
+  );
 }
 
 // Applies the global concurrency limit to the shared job queue.

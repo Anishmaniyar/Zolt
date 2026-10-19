@@ -5,7 +5,7 @@ export const createJobSchema = z.object({
     .object({
       title: z.string().min(10).max(255),
 
-      type: z.enum(['SEND_EMAIL', 'CREATE_CAMPAIGN']),
+      type: z.enum(['SEND_EMAIL', 'CREATE_CAMPAIGN', 'GENERATE_REPORT', 'WEB_HOOK']),
 
       schedule_type: z.enum(['IMMEDIATE', 'ONCE']),
 

@@ -4,6 +4,8 @@ import { z } from 'zod';
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']).default('info'),
+
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
 
   REDIS_URL: z.url(),
@@ -29,6 +31,12 @@ const envSchema = z.object({
   LEASE_DURATION_MS: z.coerce.number().int().positive().default(30000),
 
   HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
+
+  QUEUE_RECONCILIATION_INTERVAL_MS: z.coerce.number().min(5000).default(120000),
+
+  QUEUE_RECONCILIATION_BATCH_SIZE: z.coerce.number().min(5).default(50),
+
+  QUEUE_RECONCILIATION_MIN_AGE_MS: z.coerce.number().min(5000).default(30000),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -44,6 +52,8 @@ const env = parsedEnv.data;
 
 export const config = Object.freeze({
   env: env.NODE_ENV,
+
+  level: env.LOG_LEVEL,
 
   server: Object.freeze({
     port: env.PORT,
@@ -82,5 +92,11 @@ export const config = Object.freeze({
   lease: Object.freeze({
     duration: env.LEASE_DURATION_MS,
     heartbeatInterval: env.HEARTBEAT_INTERVAL_MS,
+  }),
+
+  queueReconciliation: Object.freeze({
+    interval: env.QUEUE_RECONCILIATION_INTERVAL_MS,
+    batchSize: env.QUEUE_RECONCILIATION_BATCH_SIZE,
+    minAge: env.QUEUE_RECONCILIATION_MIN_AGE_MS,
   }),
 });
