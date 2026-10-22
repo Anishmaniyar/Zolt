@@ -8,7 +8,7 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "dev": "nodemon --exec tsx src/app/server.ts",
     "build": "tsc",
-    "start": "dist/app/server.js",
+    "start": "node dist/app/server.js",
     "tests": "vitest run",
     "db:create-migration": "node-pg-migrate create",
     "db:migrate": "tsx ./node_modules/node-pg-migrate/bin/node-pg-migrate.js up",
@@ -42,6 +42,7 @@
     "node-pg-migrate": "^9.0.0",
     "nodemon": "^3.1.14",
     "pino": "^10.3.1",
+    "prom-client": "^15.1.3",
     "zod": "^4.6.5"
   }
 }

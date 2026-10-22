@@ -1,14 +1,6 @@
-services:
-  redis:
-    image: redis:7
-    container_name: zolt_redis
-    restart: unless-stopped
+name: zolt
 
-    ports:
-      - '6379:6379'
-
-    volumes:
-      - redis_data:/data
-
-volumes:
-  redis_data:
+include:
+  - docker/redis/compose.yml
+  - docker/prometheus/compose.yml
+  - docker/grafana/compose.yml

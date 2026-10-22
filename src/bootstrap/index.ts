@@ -3,6 +3,8 @@ import express, { type Express } from 'express';
 import { registerErrorHandling } from './error-handler.js';
 import { registerLogger } from './logger.js';
 import { registerRoutes } from './routes.js';
+import { metricsMiddleware } from '../middleware/metrics.middleware.js';
+import { metricsHandler } from '../shared/metrics/metrics.handler.js';
 
 // Configures the Express application.
 //
@@ -18,7 +20,11 @@ export function bootstrap(app: Express): void {
 
   app.use(express.json());
 
+  app.use(metricsMiddleware);
+
   registerRoutes(app);
+
+  app.use('/metrics', metricsHandler);
 
   registerErrorHandling(app);
 }
