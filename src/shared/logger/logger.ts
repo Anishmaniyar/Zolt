@@ -1,46 +1,64 @@
 import pino from 'pino';
 import { config } from '../../config/env.config.js';
+import { mkdirSync } from 'node:fs';
 
 const isDevelopment = config.env === 'development';
 
-export const logger = pino({
-  name: 'zolt',
-  level: config.level,
+const logDirectory = './logs';
+mkdirSync(logDirectory, { recursive: true });
 
-  base: {
-    service: 'zolt',
-    environment: config.env ?? 'development',
-  },
+export const logger = pino(
+  {
+    name: 'zolt',
+    level: config.level,
 
-  redact: {
-    paths: [
-      'password',
-      'token',
-      'accessToken',
-      'refreshToken',
-      'secret',
-      'apiKey',
-      'authorization',
-      'cookie',
-      'headers.authorization',
-      'headers.cookie',
-      'payload.password',
-      'payload.token',
-      'payload.secret',
-      'payload.email',
-      'payload.phone',
-    ],
-    censor: '[REDACTED]',
-  },
-
-  ...(isDevelopment && {
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        translateTime: 'SYS:standard',
-        ignore: 'pid,hostname',
-      },
+    base: {
+      service: 'zolt',
+      environment: config.env ?? 'development',
     },
-  }),
-});
+
+    redact: {
+      paths: [
+        'password',
+        'token',
+        'accessToken',
+        'refreshToken',
+        'secret',
+        'apiKey',
+        'authorization',
+        'cookie',
+        'headers.authorization',
+        'headers.cookie',
+        'payload.password',
+        'payload.token',
+        'payload.secret',
+        'payload.email',
+        'payload.phone',
+      ],
+      censor: '[REDACTED]',
+    },
+  },
+  pino.multistream([
+    {
+      stream: pino.destination({
+        dest: './logs/zolt.log',
+        mkdir: true,
+        sync: false,
+      }),
+    },
+    ...(isDevelopment
+      ? [
+          {
+            stream: pino.transport({
+              target: 'pino-pretty',
+              options: {
+                colorize: true,
+                translateTime: 'SYS:standard',
+                ignore: 'pid,hostname',
+              },
+            }),
+          },
+        ]
+      : []),
+  ]),
+);

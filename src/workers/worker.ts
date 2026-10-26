@@ -6,6 +6,7 @@ import AppError from '../shared/errors/appError.js';
 import { config } from '../config/env.config.js';
 import { logger } from '../shared/logger/logger.js';
 import { startHeartbeat, stopHeartbeat } from './heartbeat.js';
+import { startMetricsServer } from '../shared/metrics/metrics.server.js';
 
 export const workerRedisConnection = redis.duplicate({
   maxRetriesPerRequest: null,
@@ -19,6 +20,8 @@ logger.info(
   },
   'WORKER STARTED',
 );
+
+const metricsServer = startMetricsServer(config.ports.worker);
 
 const worker = new Worker(
   'jobs',
@@ -121,6 +124,13 @@ async function gracefulShutdown(signal: string) {
   stopHeartbeat();
   await worker.close();
   await workerRedisConnection.quit();
+
+  await new Promise<void>((resolve, reject) => {
+    metricsServer.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 
   logger.info(
     {

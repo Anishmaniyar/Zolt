@@ -6,6 +6,10 @@ import { closeQueue } from '../infrastructure/queue/queue.js';
 import { closeRedis } from '../infrastructure/redis/redis.js';
 import { closeDatabase } from '../infrastructure/database/pool.js';
 import { logger } from '../shared/logger/logger.js';
+import { config } from '../config/env.config.js';
+import { startMetricsServer } from '../shared/metrics/metrics.server.js';
+
+const metricsServer = startMetricsServer(config.ports.scheduler);
 
 // Boot an isolated scheduler engine thread
 startScheduler();
@@ -15,6 +19,13 @@ async function gracefulShutdown(signal: string) {
   logger.info({ event: 'scheduler.stopping', signal }, 'SCHEDULER STOPPING');
 
   stopScheduler();
+
+  await new Promise<void>((resolve, reject) => {
+    metricsServer.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 
   // close resources owned by scheduler
   await closeQueue();

@@ -10,6 +10,7 @@ import { pool } from '../../infrastructure/database/pool.js';
 import { logger } from '../../shared/logger/logger.js';
 import { config } from '../../config/env.config.js';
 import { registerExecution, unregisterExecution } from '../../workers/heartbeat.js';
+import { jobsTotalFinalState } from '../../shared/metrics/jobs.metrics.js';
 
 export type JobType = keyof typeof handlerRegistry;
 
@@ -186,6 +187,10 @@ export const executeExistingExecution = async (
       noHandlerResult = await JobRepository.failedJob(noHandlerClient, job.id);
 
       await noHandlerClient.query('COMMIT');
+
+      if (noHandlerResult) {
+        jobsTotalFinalState.labels(job.type, job.schedule_type, 'FAILED').inc();
+      }
     } catch (error) {
       await noHandlerClient.query('ROLLBACK');
       unregisterExecution(execution.id);
@@ -313,6 +318,10 @@ export const executeExistingExecution = async (
 
         await client.query('COMMIT');
 
+        if (result) {
+          jobsTotalFinalState.labels(job.type, job.schedule_type, 'FAILED').inc();
+        }
+
         logger.warn(
           {
             event: 'execution.timed_out',
@@ -438,6 +447,10 @@ export const executeExistingExecution = async (
 
       await finalFailureClient.query('COMMIT');
 
+      if (result) {
+        jobsTotalFinalState.labels(job.type, job.schedule_type, 'FAILED').inc();
+      }
+
       logger.error(
         {
           event: 'execution.failed',
@@ -490,6 +503,10 @@ export const executeExistingExecution = async (
     const result = await JobRepository.successJob(client, job.id);
 
     await client.query('COMMIT');
+
+    if (result) {
+      jobsTotalFinalState.labels(job.type, job.schedule_type, 'COMPLETED').inc();
+    }
 
     logger.info(
       {
@@ -577,6 +594,10 @@ export const recoverExpiredExecution = async (executionId: string) => {
       const result = await JobRepository.successJob(client, execution.job_id);
 
       await client.query('COMMIT');
+
+      if (result) {
+        jobsTotalFinalState.labels(result.type, result.schedule_type, 'COMPLETED').inc();
+      }
 
       logger.info(
         {

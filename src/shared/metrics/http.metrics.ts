@@ -1,7 +1,5 @@
-import { Registry, Counter, Gauge, Histogram } from 'prom-client';
-
-// reigstry is created this point is used to collect all the data of metrics this is only provided when we call the metrics handler to get data
-export const register = new Registry();
+import { Counter, Gauge, Histogram } from 'prom-client';
+import { register } from './registry.js';
 
 export const httpRequestsTotal = new Counter({
   name: 'zolt_http_requests_total',

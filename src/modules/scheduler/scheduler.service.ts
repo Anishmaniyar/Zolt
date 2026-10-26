@@ -83,7 +83,7 @@ const processDueExecutions = async () => {
 
 // Publishes claimed outbox rows to BullMQ.
 // This is the sole place that enqueues jobs and executions to BullMQ.
-const processPendingOutbox = async () => {
+export const processPendingOutbox = async () => {
   try {
     const claimedOutbox = await OutboxRepository.claimPendingOutbox(config.scheduler.batch);
 
@@ -102,7 +102,12 @@ const processPendingOutbox = async () => {
         );
       }
     } catch (error) {
-      await OutboxRepository.resetOutboxToPending(jobOutboxes.map((outbox) => outbox.id));
+      // Execution rows were claimed in the same batch but never attempted,
+      // so they must also return to PENDING instead of being stranded.
+      await OutboxRepository.resetOutboxToPending([
+        ...jobOutboxes.map((outbox) => outbox.id),
+        ...executionOutboxes.map((outbox) => outbox.id),
+      ]);
 
       throw error;
     }

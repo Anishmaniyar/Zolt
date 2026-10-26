@@ -186,6 +186,8 @@ export const successJob = async (client: PoolClient, jobId: string) => {
         status = 'COMPLETED',
         updated_at = NOW()
       WHERE id = $1
+        AND status != 'COMPLETED'
+        AND status != 'FAILED'
       RETURNING *;
     `,
     [jobId],
@@ -203,6 +205,8 @@ export const failedJob = async (client: PoolClient, jobId: string) => {
         status = 'FAILED',
         updated_at = NOW()
       WHERE id = $1
+        AND status != 'COMPLETED'
+        AND status != 'FAILED'
       RETURNING *;
     `,
     [jobId],

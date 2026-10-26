@@ -4,3 +4,5 @@ include:
   - docker/redis/compose.yml
   - docker/prometheus/compose.yml
   - docker/grafana/compose.yml
+  - docker/loki/compose.yml
+  - docker/alloy/compose.yml

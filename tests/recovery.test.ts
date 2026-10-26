@@ -3,6 +3,7 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/infrastructure/database/pool.js';
 import { recoverExpiredExecution } from '../src/modules/executions/execution.service.js';
 import { acquireExecutionLease } from '../src/modules/leases/leases.repository.js';
+import { jobsTotalFinalState } from '../src/shared/metrics/jobs.metrics.js';
 
 interface FixtureOptions {
   executionStatus?: string;
@@ -12,6 +13,17 @@ interface FixtureOptions {
 
 describe('Worker-crash recovery', () => {
   const createdJobIds: string[] = [];
+
+  const getCompletedCount = async () => {
+    const match = (await jobsTotalFinalState.get()).values.find(
+        (value) =>
+          value.labels.type === 'SEND_EMAIL' &&
+          value.labels.schedule_type === 'ONCE' &&
+          value.labels.status === 'COMPLETED',
+      );
+
+    return match?.value ?? 0;
+  };
 
   const createFixture = async (options: FixtureOptions = {}) => {
     const { executionStatus = 'RUNNING', idempotencyStatus = 'PROCESSING', lease = 'expired' } =
@@ -148,6 +160,7 @@ describe('Worker-crash recovery', () => {
   });
 
   it('expired lease with COMPLETED idempotency finalizes execution and job', async () => {
+    const completedBefore = await getCompletedCount();
     const { jobId, executionId } = await createFixture({ idempotencyStatus: 'COMPLETED' });
 
     const result = await recoverExpiredExecution(executionId);
@@ -156,6 +169,9 @@ describe('Worker-crash recovery', () => {
     expect((await getExecution(executionId)).status).toBe('COMPLETED');
     expect((await getJob(jobId)).status).toBe('COMPLETED');
     expect(await countExecutions(jobId)).toBe(1);
+
+    // Recovery that finalizes a job increments the final-state counter exactly once.
+    expect(await getCompletedCount()).toBe(completedBefore + 1);
   });
 
   it('missing idempotency record recovers nothing', async () => {

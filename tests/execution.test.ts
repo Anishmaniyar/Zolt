@@ -3,6 +3,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { pool } from '../src/infrastructure/database/pool.js';
 import { executeExistingExecution } from '../src/modules/executions/execution.service.js';
 import { handlerRegistry } from '../src/handlers/handler.registry.js';
+import { jobsTotalFinalState } from '../src/shared/metrics/jobs.metrics.js';
 
 // Failure injection for the rollback tests. vi.mock factories are hoisted,
 // so flags live on globalThis instead of test-scope closures.
@@ -69,6 +70,17 @@ interface Fixture {
 
 describe('Execution lifecycle and retry', () => {
   const createdJobIds: string[] = [];
+
+  const getFinalStateCount = async (status: 'COMPLETED' | 'FAILED') => {
+    const match = (await jobsTotalFinalState.get()).values.find(
+        (value) =>
+          value.labels.type === 'SEND_EMAIL' &&
+          value.labels.schedule_type === 'ONCE' &&
+          value.labels.status === status,
+      );
+
+    return match?.value ?? 0;
+  };
 
   const createFixture = async (maxAttempts = 3): Promise<Fixture> => {
     // QUEUED = the state the scheduler leaves the job in before the worker
@@ -158,6 +170,7 @@ describe('Execution lifecycle and retry', () => {
   });
 
   it('successful execution completes execution, job, and idempotency', async () => {
+    const completedBefore = await getFinalStateCount('COMPLETED');
     const { jobId, executionId, idempotencyKey } = await createFixture();
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockResolvedValue(undefined);
 
@@ -170,9 +183,13 @@ describe('Execution lifecycle and retry', () => {
     const idempotency = await getIdempotency(idempotencyKey);
     expect(idempotency.status).toBe('COMPLETED');
     expect(idempotency.processing_started_at).toBeNull();
+
+    // Terminal success increments the final-state counter exactly once.
+    expect(await getFinalStateCount('COMPLETED')).toBe(completedBefore + 1);
   });
 
   it('handler failure with retry available fails execution 1 and schedules execution 2', async () => {
+    const failedBefore = await getFinalStateCount('FAILED');
     const { executionId, idempotencyKey } = await createFixture();
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockRejectedValue(
       new Error('Test handler failure'),
@@ -201,9 +218,13 @@ describe('Execution lifecycle and retry', () => {
     expect(retry.attempt).toBe(2);
     expect(retry.status).toBe('SCHEDULED');
     expect(retry.retry_at).not.toBeNull();
+
+    // A retryable failure is not a terminal job state.
+    expect(await getFinalStateCount('FAILED')).toBe(failedBefore);
   });
 
   it('handler failure with no retries remaining fails the job and creates nothing', async () => {
+    const failedBefore = await getFinalStateCount('FAILED');
     const { jobId, executionId, idempotencyKey } = await createFixture(1);
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockRejectedValue(
       new Error('Test handler failure'),
@@ -220,9 +241,13 @@ describe('Execution lifecycle and retry', () => {
     const idempotency = await getIdempotency(idempotencyKey);
     expect(idempotency.status).toBe('PROCESSING');
     expect(idempotency.processing_started_at).not.toBeNull();
+
+    // Terminal failure increments the final-state counter exactly once.
+    expect(await getFinalStateCount('FAILED')).toBe(failedBefore + 1);
   });
 
   it('success transaction rollback commits nothing on mid-transaction failure', async () => {
+    const completedBefore = await getFinalStateCount('COMPLETED');
     const { jobId, executionId, idempotencyKey } = await createFixture();
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockResolvedValue(undefined);
     globalThis.__failSuccessJob = true;
@@ -240,6 +265,9 @@ describe('Execution lifecycle and retry', () => {
     expect(idempotency.processing_started_at).not.toBeNull();
 
     expect(await countExecutions(jobId)).toBe(1);
+
+    // Rolled back success must not be counted.
+    expect(await getFinalStateCount('COMPLETED')).toBe(completedBefore);
   });
 
   it('retry rollback leaves no orphan retry when retry creation fails', async () => {
@@ -281,6 +309,7 @@ describe('Execution lifecycle and retry', () => {
     );
 
   it('timeout with retry available marks TIMED_OUT and schedules execution 2', async () => {
+    const failedBefore = await getFinalStateCount('FAILED');
     const { jobId, executionId, idempotencyKey } = await createFixture(2);
     mockTimeoutHandler();
 
@@ -308,9 +337,13 @@ describe('Execution lifecycle and retry', () => {
     expect(idempotency.processing_started_at).toBeNull();
 
     expect((await getJob(jobId)).status).toBe('RUNNING');
+
+    // A retryable timeout is not a terminal job state.
+    expect(await getFinalStateCount('FAILED')).toBe(failedBefore);
   });
 
   it('timeout on final attempt marks TIMED_OUT and fails the job', async () => {
+    const failedBefore = await getFinalStateCount('FAILED');
     const { jobId, executionId } = await createFixture(1);
     mockTimeoutHandler();
 
@@ -320,6 +353,9 @@ describe('Execution lifecycle and retry', () => {
     expect((await getExecution(executionId)).status).toBe('TIMED_OUT');
     expect((await getJob(jobId)).status).toBe('FAILED');
     expect(await countExecutions(jobId)).toBe(1);
+
+    // Terminal timeout increments the final-state counter exactly once.
+    expect(await getFinalStateCount('FAILED')).toBe(failedBefore + 1);
   });
 
   it('timeout retry transaction rolls back when retry creation fails', async () => {

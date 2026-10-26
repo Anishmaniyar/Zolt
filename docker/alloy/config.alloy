@@ -1,0 +1,21 @@
+
+local.file_match "zolt_logs" {
+  path_targets = [
+    {
+      __path__ = "/var/log/zolt/zolt.log",
+      job      = "zolt",
+      service  = "zolt-api",
+    },
+  ]
+}
+
+loki.source.file "zolt_logs" {
+  targets    = local.file_match.zolt_logs.targets
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

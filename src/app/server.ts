@@ -6,6 +6,7 @@ import { closeQueue, configureQueue } from '../infrastructure/queue/queue.js';
 import { closeRedis } from '../infrastructure/redis/redis.js';
 import { closeDatabase } from '../infrastructure/database/pool.js';
 import { logger } from '../shared/logger/logger.js';
+import { startMetricsServer } from '../shared/metrics/metrics.server.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -21,7 +22,7 @@ async function closeResources(): Promise<void> {
 
 // Stops accepting connections, closes active ones after a bounded wait,
 // then releases queue, Redis, and Postgres connections.
-async function shutdown(server: Server, signal: string): Promise<void> {
+async function shutdown(server: Server, signal: string, metricsServer: Server): Promise<void> {
   if (isShuttingDown) {
     logger.warn(
       { event: 'server.shutdown_ignored', signal },
@@ -32,6 +33,7 @@ async function shutdown(server: Server, signal: string): Promise<void> {
   }
 
   isShuttingDown = true;
+  metricsServer.close();
 
   logger.info({ event: 'server.stopping', signal }, 'SERVER STOPPING');
 
@@ -77,6 +79,8 @@ async function startServer(): Promise<void> {
     const httpServer = createServer(app);
 
     server = httpServer;
+
+    const metricServer = startMetricsServer(config.ports.api);
 
     await new Promise<void>((resolve, reject) => {
       httpServer.once('error', reject);

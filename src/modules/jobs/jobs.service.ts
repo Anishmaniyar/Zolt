@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import AppError from '../../shared/errors/appError.js';
 import * as JobRepository from './jobs.repository.js';
 import type { GetJobsQuery } from './jobs.types.js';
+import { jobsTotal } from '../../shared/metrics/jobs.metrics.js';
 
 // Creates a job with a fresh idempotency key, resolving its run time from the schedule type.
 export const createJobService = async (data: {
@@ -44,6 +45,8 @@ export const createJobService = async (data: {
   if (!job) {
     throw new AppError('Error creating the job', 500);
   }
+
+  jobsTotal.labels(job.type, job.schedule_type).inc();
 
   return job;
 };
