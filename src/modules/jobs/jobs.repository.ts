@@ -16,14 +16,36 @@ export interface CreateJobWithIdempotencyData {
   idempotencyKey: string;
 }
 
+export interface JobRecord {
+  id: string;
+  title: string;
+  type: string;
+  schedule_type: 'IMMEDIATE' | 'ONCE';
+  status: string;
+  max_attempts: number;
+  run_at: Date;
+  payload?: Record<string, unknown> | null;
+}
+
+export interface CreateJobWithIdempotencyResult {
+  job: JobRecord | null;
+  // True when this submission key was already used, so the stored job is
+  // returned instead of creating a duplicate.
+  deduplicated: boolean;
+}
+
 // Creates a job and its PENDING idempotency record in one transaction.
-export const createJobWithIdempotency = async (data: CreateJobWithIdempotencyData) => {
+// A client-supplied idempotency key is claimed with ON CONFLICT, so two
+// identical submissions produce exactly one job even when they race.
+export const createJobWithIdempotency = async (
+  data: CreateJobWithIdempotencyData,
+): Promise<CreateJobWithIdempotencyResult> => {
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
 
-    const jobResult = await client.query(
+    const jobResult = await client.query<JobRecord>(
       `
         INSERT INTO jobs (
           title,
@@ -48,20 +70,45 @@ export const createJobWithIdempotency = async (data: CreateJobWithIdempotencyDat
 
     const job = jobResult.rows[0];
 
-    await client.query(
+    if (!job) {
+      await client.query('ROLLBACK');
+      throw new Error('Job insert returned no row');
+    }
+
+    const keyResult = await client.query(
       `
         INSERT INTO idempotency_records (
           job_id,
           idempotency_key
         )
         VALUES ($1, $2)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING id
       `,
       [job.id, data.idempotencyKey],
     );
 
+    if (keyResult.rowCount === 0) {
+      // The submission key is already in use: discard the duplicate job and
+      // answer with the job created by the first submission.
+      await client.query('ROLLBACK');
+
+      const existingResult = await client.query<JobRecord>(
+        `
+          SELECT jobs.*
+          FROM jobs
+          JOIN idempotency_records ON idempotency_records.job_id = jobs.id
+          WHERE idempotency_records.idempotency_key = $1
+        `,
+        [data.idempotencyKey],
+      );
+
+      return { job: existingResult.rows[0] ?? null, deduplicated: true };
+    }
+
     await client.query('COMMIT');
 
-    return job;
+    return { job, deduplicated: false };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -186,8 +233,7 @@ export const successJob = async (client: PoolClient, jobId: string) => {
         status = 'COMPLETED',
         updated_at = NOW()
       WHERE id = $1
-        AND status != 'COMPLETED'
-        AND status != 'FAILED'
+        AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
       RETURNING *;
     `,
     [jobId],
@@ -205,8 +251,7 @@ export const failedJob = async (client: PoolClient, jobId: string) => {
         status = 'FAILED',
         updated_at = NOW()
       WHERE id = $1
-        AND status != 'COMPLETED'
-        AND status != 'FAILED'
+        AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
       RETURNING *;
     `,
     [jobId],

@@ -126,7 +126,7 @@ describe('Worker-crash recovery', () => {
     await pool.end();
   });
 
-  it('crashed execution with PROCESSING idempotency creates a retry and outbox record', async () => {
+  it('crashed execution with PROCESSING idempotency creates a runnable retry', async () => {
     const { jobId, executionId } = await createFixture();
 
     const result = await recoverExpiredExecution(executionId);
@@ -145,13 +145,15 @@ describe('Worker-crash recovery', () => {
     expect(retry.status).toBe('SCHEDULED');
     expect(retry.retry_at).not.toBeNull();
 
+    // The replacement is SCHEDULED, so recovery must not publish it. The
+    // scheduler's due-execution claim writes its outbox row when it is due.
     const outbox = await getExecutionOutbox(retry.id);
-    expect(outbox).not.toBeNull();
-    expect(outbox.status).toBe('PENDING');
+    expect(outbox).toBeNull();
 
-    // Crash recovery leaves the job running and the claim untouched.
+    // Crash recovery leaves the job running and releases the claim so the
+    // replacement attempt can acquire it.
     expect((await getJob(jobId)).status).toBe('RUNNING');
-    expect((await getIdempotency(jobId)).status).toBe('PROCESSING');
+    expect((await getIdempotency(jobId)).status).toBe('PENDING');
 
     // The expired lease is kept as ownership history.
     const lease = await pool.query(`SELECT * FROM leases WHERE execution_id = $1`, [executionId]);

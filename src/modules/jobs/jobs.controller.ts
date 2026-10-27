@@ -6,27 +6,35 @@ import * as ExecutionService from '../executions/execution.service.js';
 import { logger } from '../../shared/logger/logger.js';
 
 // Handles POST /jobs by creating a new job.
+// An optional client Idempotency-Key makes the submission replay-safe: the same
+// key returns the job created by the first request (200) instead of a duplicate.
 export const createJobController = asyncHandler(
   async (req: Request, res: Response, _next: NextFunction) => {
-    const result = await JobService.createJobService(req.body);
+    const idempotencyKey = req.get('Idempotency-Key');
+
+    const { job, deduplicated } = await JobService.createJobService(req.body, {
+      idempotencyKey,
+    });
 
     logger.info(
       {
-        event: 'job.created',
+        event: deduplicated ? 'job.deduplicated' : 'job.created',
         requestId: res.locals.requestId,
-        jobId: result.id,
-        type: result.type,
-        scheduleType: result.schedule_type,
-        maxAttempts: result.max_attempts,
-        status: result.status,
+        jobId: job.id,
+        type: job.type,
+        scheduleType: job.schedule_type,
+        maxAttempts: job.max_attempts,
+        status: job.status,
+        idempotencyKeyProvided: idempotencyKey !== undefined,
       },
-      'JOB CREATED',
+      deduplicated ? 'JOB DEDUPLICATED BY IDEMPOTENCY KEY' : 'JOB CREATED',
     );
 
-    return res.status(201).json({
-      message: 'Job created successfully',
+    return res.status(deduplicated ? 200 : 201).json({
+      message: deduplicated ? 'Job already exists for this Idempotency-Key' : 'Job created successfully',
       status: 'success',
-      data: result,
+      deduplicated,
+      data: job,
     });
   },
 );

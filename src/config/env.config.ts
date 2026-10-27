@@ -23,7 +23,9 @@ const envSchema = z
 
     WORKER_CONCURRENCY: z.coerce.number().min(1).default(5),
 
-    WORKER_ID: z.string().default('unknown-worker'),
+    // Defaults are unique per process so two workers never share a lease
+    // identity (renewLease trusts worker_id) and their log lines stay separable.
+    WORKER_ID: z.string().default(`worker-${process.pid}`),
 
     GLOBAL_CONCURRENCY: z.coerce.number().min(1).default(6),
 
@@ -31,7 +33,7 @@ const envSchema = z
 
     SCHEDULER_BATCH_SIZE: z.coerce.number().min(5).default(5),
 
-    SCHEDULER_ID: z.string().default('unknown-scheduler'),
+    SCHEDULER_ID: z.string().default(`scheduler-${process.pid}`),
 
     IDEMPOTENCY_PROCESSING_TIMEOUT_MS: z.coerce.number(),
 
@@ -46,6 +48,8 @@ const envSchema = z
     QUEUE_RECONCILIATION_BATCH_SIZE: z.coerce.number().min(5).default(50),
 
     QUEUE_RECONCILIATION_MIN_AGE_MS: z.coerce.number().min(5000).default(30000),
+
+    OUTBOX_RETENTION_MS: z.coerce.number().int().min(60_000).default(86_400_000),
   })
   .superRefine((data, ctx) => {
     if (data.API_METRICS_PORT === data.SCHEDULER_METRICS_PORT) {
@@ -112,7 +116,7 @@ export const config = Object.freeze({
     id: env.SCHEDULER_ID,
   }),
 
-  idempotemcy: Object.freeze({
+  idempotency: Object.freeze({
     processingTimeout: env.IDEMPOTENCY_PROCESSING_TIMEOUT_MS,
   }),
 
@@ -131,6 +135,12 @@ export const config = Object.freeze({
     interval: env.QUEUE_RECONCILIATION_INTERVAL_MS,
     batchSize: env.QUEUE_RECONCILIATION_BATCH_SIZE,
     minAge: env.QUEUE_RECONCILIATION_MIN_AGE_MS,
+  }),
+
+  outbox: Object.freeze({
+    // Published rows are history, not state: keep them for the retention
+    // window and prune, so the table does not grow forever.
+    retention: env.OUTBOX_RETENTION_MS,
   }),
 
   ports: Object.freeze({

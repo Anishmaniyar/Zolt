@@ -4,15 +4,38 @@ import * as JobRepository from './jobs.repository.js';
 import type { GetJobsQuery } from './jobs.types.js';
 import { jobsTotal, jobsTotalFinalState } from '../../shared/metrics/jobs.metrics.js';
 
-// Creates a job with a fresh idempotency key, resolving its run time from the schedule type.
-export const createJobService = async (data: {
-  title: string;
-  type: string;
-  schedule_type: 'IMMEDIATE' | 'ONCE';
-  payload?: Record<string, unknown>;
-  run_at?: string | Date;
-  max_attempts: number;
-}) => {
+export interface CreateJobOptions {
+  // Optional client-supplied Idempotency-Key. Reusing it returns the job
+  // created by the first submission instead of creating a duplicate.
+  idempotencyKey?: string;
+}
+
+// Resolves the submission key: the client value when present, otherwise a
+// fresh UUID that keeps every submission distinct.
+const resolveIdempotencyKey = (idempotencyKey?: string): string => {
+  if (idempotencyKey === undefined) return crypto.randomUUID();
+
+  const trimmed = idempotencyKey.trim();
+
+  if (trimmed.length < 1 || trimmed.length > 200) {
+    throw new AppError('Idempotency-Key must be between 1 and 200 characters', 400);
+  }
+
+  return trimmed;
+};
+
+// Creates a job with an idempotency key, resolving its run time from the schedule type.
+export const createJobService = async (
+  data: {
+    title: string;
+    type: string;
+    schedule_type: 'IMMEDIATE' | 'ONCE';
+    payload?: Record<string, unknown>;
+    run_at?: string | Date;
+    max_attempts: number;
+  },
+  options: CreateJobOptions = {},
+) => {
   let runAt: Date;
 
   if (data.schedule_type === 'IMMEDIATE') {
@@ -35,9 +58,9 @@ export const createJobService = async (data: {
   };
 
   // IDENTITY OF THE LOGICAL OPERATION
-  const idempotencyKey = crypto.randomUUID();
+  const idempotencyKey = resolveIdempotencyKey(options.idempotencyKey);
 
-  const job = await JobRepository.createJobWithIdempotency({
+  const { job, deduplicated } = await JobRepository.createJobWithIdempotency({
     job: createJobData,
     idempotencyKey,
   });
@@ -46,9 +69,12 @@ export const createJobService = async (data: {
     throw new AppError('Error creating the job', 500);
   }
 
-  jobsTotal.labels(job.type, job.schedule_type).inc();
+  // A deduplicated submission is not a new job and must not be counted again.
+  if (!deduplicated) {
+    jobsTotal.labels(job.type, job.schedule_type).inc();
+  }
 
-  return job;
+  return { job, deduplicated };
 };
 
 // Fetches a single job by its ID.

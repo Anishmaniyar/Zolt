@@ -27,14 +27,12 @@ export const newExecution = async (
   return result.rows[0] ?? null;
 };
 
-// Creates the first QUEUED execution for a newly submitted job.
-export const newInitialExecution = async (
-  jobId: string,
-  attempt: number,
-  retry_at: Date | null,
-  status: 'SCHEDULED' | 'QUEUED' = 'SCHEDULED',
-) => {
-  const result = await pool.query(
+// Returns the attempt-1 execution of a job, creating it only when it is
+// missing. The unique (job_id, attempt) constraint makes a duplicate queue
+// delivery converge on the existing attempt instead of inserting a second one.
+// `created` tells the caller whether this call inserted the row.
+export const getOrCreateInitialExecution = async (jobId: string) => {
+  const inserted = await pool.query(
     `
       INSERT INTO executions (
         job_id,
@@ -43,13 +41,26 @@ export const newInitialExecution = async (
         started_at,
         retry_at
       )
-      VALUES ($1, $2, $3, NULL, $4)
-      RETURNING *
+      VALUES ($1, 1, 'QUEUED', NULL, NULL)
+      ON CONFLICT (job_id, attempt) DO NOTHING
+      RETURNING *, TRUE AS created
     `,
-    [jobId, attempt, status, retry_at],
+    [jobId],
   );
 
-  return result.rows[0] ?? null;
+  if (inserted.rows[0]) return inserted.rows[0];
+
+  const existing = await pool.query(
+    `
+      SELECT *, FALSE AS created
+      FROM executions
+      WHERE job_id = $1
+        AND attempt = 1
+    `,
+    [jobId],
+  );
+
+  return existing.rows[0] ?? null;
 };
 
 // Marks an execution as FAILED with its error message.
@@ -174,20 +185,27 @@ export const timedOutExecution = async (client: PoolClient, executionId: string)
 };
 
 // Marks a RUNNING execution as WORKER_CRASHED after its lease expired.
-export const markWorkerCrashed = async (client: PoolClient, executionId: string) => {
+// `completedAt` is the lease expiry, i.e. the last moment the worker was known
+// to be alive. Using NOW() here would make the recorded duration measure
+// recovery detection delay instead of the attempt.
+export const markWorkerCrashed = async (
+  client: PoolClient,
+  executionId: string,
+  completedAt: Date,
+) => {
   const result = await client.query(
     `
       UPDATE executions
       SET
         status = 'WORKER_CRASHED',
         updated_at = NOW(),
-        completed_at = NOW()
+        completed_at = $2
       WHERE id = $1
         AND status = 'RUNNING'
       RETURNING *,
         (SELECT type FROM jobs WHERE jobs.id = executions.job_id) AS job_type;
     `,
-    [executionId],
+    [executionId, completedAt],
   );
 
   return result.rows[0] ?? null;

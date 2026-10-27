@@ -74,6 +74,22 @@ export const getPendingOutboxStats = async () => {
   };
 };
 
+// Deletes PUBLISHED rows older than the retention window.
+// PENDING rows are never touched: they still have to be published.
+export const deletePublishedOutboxBefore = async (retentionMs: number) => {
+  const result = await pool.query(
+    `
+      DELETE FROM outbox
+      WHERE status = 'PUBLISHED'
+        AND published_at IS NOT NULL
+        AND published_at < NOW() - ($1 * INTERVAL '1 millisecond')
+    `,
+    [retentionMs],
+  );
+
+  return result.rowCount ?? 0;
+};
+
 // Returns claimed outbox rows to PENDING after a failed BullMQ enqueue so the next tick retries them.
 export const resetOutboxToPending = async (outboxIds: string[]) => {
   // Called only when the Redis enqueue AFTER the claim throws,

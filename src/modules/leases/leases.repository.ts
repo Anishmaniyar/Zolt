@@ -143,7 +143,9 @@ export const renewLease = async (
   return result.rows[0] ?? null;
 };
 
-// Finds leases whose expiry has passed along with their execution status.
+// Finds leases whose expiry has passed for executions that are still RUNNING.
+// A finished execution keeps its lease row as ownership history, and recovering
+// it would return false on every tick, so those rows are filtered out here.
 export const findExpiredLeases = async () => {
   const result = await pool.query(
     `
@@ -156,6 +158,7 @@ export const findExpiredLeases = async () => {
       FROM leases
       JOIN executions ON executions.id = leases.execution_id
       WHERE leases.lease_expires_at <= NOW()
+        AND executions.status = 'RUNNING'
       ORDER BY leases.lease_expires_at ASC
     `,
   );

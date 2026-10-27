@@ -121,8 +121,10 @@ async function gracefulShutdown(signal: string) {
     'WORKER STOPPING',
   );
 
-  stopHeartbeat();
+  // Drain first: active handlers keep renewing their leases while they finish,
+  // so a shutdown cannot look like a crash to the recovery path.
   await worker.close();
+  stopHeartbeat();
   await workerRedisConnection.quit();
 
   await new Promise<void>((resolve, reject) => {

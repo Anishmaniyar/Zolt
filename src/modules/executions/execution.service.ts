@@ -4,7 +4,6 @@ import * as ExecutionRepository from './execution.repository.js';
 import * as JobRepository from '../jobs/jobs.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
 import * as LeaseRepository from '../leases/leases.repository.js';
-import * as OutboxRepository from '../outbox/outbox.repository.js';
 import { calculateRetryAt } from '../../utils/retry.utils.js';
 import { pool } from '../../infrastructure/database/pool.js';
 import { logger } from '../../shared/logger/logger.js';
@@ -23,6 +22,7 @@ export interface JobForExecution {
   title: string;
   type: JobType;
   schedule_type: 'IMMEDIATE' | 'ONCE';
+  status: string;
   payload?: Record<string, unknown>;
   run_at: Date;
   max_attempts: number;
@@ -41,11 +41,27 @@ export interface ExecutionInterface {
 }
 
 // Creates the first execution for a job and runs it immediately on this worker.
+// Duplicate deliveries of the same execute-job message converge on the existing
+// attempt instead of adding another attempt-1 row.
 export const createNewExecution = async (
   job: JobForExecution,
   workerId: string = config.worker.id,
 ) => {
-  const execution = await ExecutionRepository.newInitialExecution(job.id, 1, null, 'QUEUED');
+  if (job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED') {
+    logger.warn(
+      {
+        event: 'execution.creation_skipped',
+        jobId: job.id,
+        jobStatus: job.status,
+        workerId,
+      },
+      'EXECUTION CREATION SKIPPED, JOB ALREADY TERMINAL',
+    );
+
+    return false;
+  }
+
+  const execution = await ExecutionRepository.getOrCreateInitialExecution(job.id);
 
   if (!execution) {
     throw new AppError('Error generating the execution', 500);
@@ -58,13 +74,12 @@ export const createNewExecution = async (
       executionId: execution.id,
       attempt: execution.attempt,
       status: execution.status,
+      created: execution.created,
     },
     'EXECUTION CREATED',
   );
 
-  await executeExistingExecution(execution.id, workerId);
-
-  return true;
+  return await executeExistingExecution(execution.id, workerId);
 };
 
 // Executes an existing queued execution.
@@ -120,6 +135,46 @@ export const executeExistingExecution = async (
   if (!job) {
     unregisterExecution(execution.id);
     throw new AppError(`Job ${execution.job_id} not found`, 404);
+  }
+
+  // The job may have been cancelled or terminally failed while this attempt sat
+  // in the queue. Refuse to run the handler, and close the stranded attempt so
+  // reconciliation does not keep re-enqueueing it.
+  if (job.status === 'FAILED' || job.status === 'CANCELLED') {
+    const terminalClient = await pool.connect();
+
+    try {
+      await terminalClient.query('BEGIN');
+
+      await ExecutionRepository.failedExecution(
+        terminalClient,
+        execution.id,
+        `job_${String(job.status).toLowerCase()}`,
+      );
+
+      await terminalClient.query('COMMIT');
+    } catch (error) {
+      await terminalClient.query('ROLLBACK');
+      unregisterExecution(execution.id);
+      throw error;
+    } finally {
+      terminalClient.release();
+    }
+
+    unregisterExecution(execution.id);
+
+    logger.warn(
+      {
+        event: 'execution.skipped_terminal_job',
+        jobId: job.id,
+        executionId: execution.id,
+        jobStatus: job.status,
+        workerId,
+      },
+      'EXECUTION SKIPPED, JOB ALREADY TERMINAL',
+    );
+
+    return false;
   }
 
   const idempotencyRecord = await IdempotencyRepository.getByJobId(job.id);
@@ -723,11 +778,66 @@ export const recoverExpiredExecution = async (executionId: string) => {
       return false;
     }
 
-    const crashed = await ExecutionRepository.markWorkerCrashed(client, execution.id);
+    const crashed = await ExecutionRepository.markWorkerCrashed(
+      client,
+      execution.id,
+      new Date(lease.lease_expires_at),
+    );
 
     if (!crashed) {
       await client.query('ROLLBACK');
       return false;
+    }
+
+    const job = await JobRepository.getJobById(execution.job_id);
+    const maxAttempts = job?.max_attempts ?? execution.attempt;
+
+    // The crashed attempt was the last allowed one: fail the job instead of
+    // creating an attempt beyond max_attempts.
+    if (execution.attempt >= maxAttempts) {
+      const failedJob = await JobRepository.failedJob(client, execution.job_id);
+
+      await client.query('COMMIT');
+
+      if (crashed.job_type) {
+        observeExecutionDuration(
+          crashed.job_type,
+          crashed.status,
+          crashed.started_at,
+          crashed.completed_at,
+        );
+      }
+
+      if (failedJob) {
+        jobsTotalFinalState.labels(failedJob.type, failedJob.schedule_type, 'FAILED').inc();
+      }
+
+      logger.warn(
+        {
+          event: 'execution.worker_crashed',
+          jobId: crashed.job_id,
+          executionId: crashed.id,
+          attempt: crashed.attempt,
+          status: crashed.status,
+          workerId: lease.worker_id,
+        },
+        'EXECUTION WORKER CRASHED',
+      );
+
+      logger.error(
+        {
+          event: 'job.failed',
+          jobId: execution.job_id,
+          type: failedJob?.type ?? job?.type,
+          scheduleType: failedJob?.schedule_type ?? job?.schedule_type,
+          maxAttempts,
+          status: failedJob?.status ?? 'FAILED',
+          reason: 'max_attempts_reached_after_worker_crash',
+        },
+        'JOB FAILED',
+      );
+
+      return true;
     }
 
     const nextAttempt = execution.attempt + 1;
@@ -746,8 +856,15 @@ export const recoverExpiredExecution = async (executionId: string) => {
       throw new AppError('Error generating the recovery execution', 500);
     }
 
-    await OutboxRepository.createExecutionOutbox(client, newExecution.id);
+    // Hand the claim back to the replacement attempt: the crashed worker no
+    // longer owns it, and a SCHEDULED attempt cannot run while the record is
+    // still PROCESSING.
+    await IdempotencyRepository.resetToPending(client, idempotency.idempotency_key);
 
+    // No outbox row is written here. The replacement is SCHEDULED, and the
+    // scheduler's due-execution claim writes exactly one outbox row for it when
+    // its retry time arrives; writing one now would collide with the unique
+    // outbox.execution_id constraint on that claim.
     await client.query('COMMIT');
 
     if (crashed.job_type) {

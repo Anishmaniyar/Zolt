@@ -113,6 +113,35 @@ export async function getQueueExecution(executionId: string): Promise<Job | null
   return job ?? null;
 }
 
+// Removes a queue entry that BullMQ is retaining in a terminal state, so its
+// deterministic id can be added again. Re-adding a retained id returns the old
+// completed/failed entry instead of queueing new work, which would leave the
+// matching DB row QUEUED until retention drops it.
+export async function removeTerminalQueueEntry(entry: Job | null): Promise<boolean> {
+  if (!entry) return false;
+
+  const state = await entry.getState();
+
+  if (state !== 'failed' && state !== 'completed') return false;
+
+  try {
+    await entry.remove();
+
+    return true;
+  } catch (error) {
+    logger.warn(
+      {
+        event: 'queue.terminal_entry_remove_failed',
+        queueJobId: entry.id,
+        error,
+      },
+      'QUEUE TERMINAL ENTRY COULD NOT BE REMOVED',
+    );
+
+    return false;
+  }
+}
+
 export async function isQueueEntryRunnable(job: Job | null): Promise<boolean> {
   if (!job) return false;
 

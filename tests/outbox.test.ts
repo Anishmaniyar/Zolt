@@ -11,6 +11,7 @@ const queueMocks = vi.hoisted(() => ({
 
 vi.mock('../src/infrastructure/queue/queue.js', () => queueMocks);
 
+import { config } from '../src/config/env.config.js';
 import { pool } from '../src/infrastructure/database/pool.js';
 import { processPendingOutbox } from '../src/modules/scheduler/scheduler.service.js';
 import {
@@ -154,6 +155,33 @@ describe('Outbox publish failure recovery', () => {
     expect((await getOutbox(jobOutboxId)).status).toBe('PENDING');
     expect((await getOutbox(executionOutboxId)).status).toBe('PENDING');
     expect((await getOutbox(executionOutboxId)).published_at).toBeNull();
+  });
+
+  it('prunes PUBLISHED rows past the retention window and keeps recent ones', async () => {
+    const staleJobId = await createJob();
+    const staleOutboxId = await createJobOutbox(staleJobId);
+    const recentJobId = await createJob();
+    const recentOutboxId = await createJobOutbox(recentJobId);
+
+    await pool.query(
+      `UPDATE outbox
+       SET status = 'PUBLISHED', published_at = NOW() - ($2 * INTERVAL '1 millisecond'), updated_at = NOW()
+       WHERE id = $1`,
+      [staleOutboxId, config.outbox.retention + 60_000],
+    );
+
+    await pool.query(
+      `UPDATE outbox
+       SET status = 'PUBLISHED', published_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [recentOutboxId],
+    );
+
+    await processPendingOutbox();
+
+    // History past the retention window is dropped; recent history is kept.
+    expect(await getOutbox(staleOutboxId)).toBeUndefined();
+    expect((await getOutbox(recentOutboxId)).status).toBe('PUBLISHED');
   });
 
   it('outbox becomes PUBLISHED once Redis recovers', async () => {

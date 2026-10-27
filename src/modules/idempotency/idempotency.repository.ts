@@ -109,6 +109,22 @@ export const resetToPending = async (client: PoolClient, idempotencyKey: string)
   }
 };
 
+// A claim is only abandoned when its job has no RUNNING execution.
+// A RUNNING execution is owned by recovery: an execution that is still alive
+// keeps its claim (a slow handler may legitimately run longer than the
+// idempotency timeout), and a crashed execution must still show PROCESSING so
+// recovery can release the claim itself when it creates the replacement
+// attempt. Resetting here would either lose a live worker's claim or hide the
+// state recovery requires.
+const noRunningExecution = `
+  NOT EXISTS (
+    SELECT 1
+    FROM executions
+    WHERE executions.job_id = idempotency_records.job_id
+      AND executions.status = 'RUNNING'
+  )
+`;
+
 // Finds PROCESSING records stuck past the timeout that may need recovery.
 export const getStaleProcessingRecords = async (timeout: number) => {
   const result = await pool.query(
@@ -117,6 +133,7 @@ export const getStaleProcessingRecords = async (timeout: number) => {
       FROM idempotency_records
       WHERE status = 'PROCESSING'
         AND processing_started_at < NOW() - ($1 * INTERVAL '1 millisecond')
+        AND ${noRunningExecution}
     `,
     [timeout],
   );
@@ -133,6 +150,7 @@ export const resetStaleProcessingRecord = async (recordId: string, timeoutMs: nu
       WHERE id = $1
         AND status = 'PROCESSING'
         AND processing_started_at < NOW() - ($2 * INTERVAL '1 millisecond')
+        AND ${noRunningExecution}
     `,
     [recordId, timeoutMs],
   );

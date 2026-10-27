@@ -118,6 +118,34 @@ const updateOutboxMetrics = async () => {
   }
 };
 
+// Prunes PUBLISHED outbox rows past the retention window so the table does not
+// grow forever. Failures here must never break the tick.
+const prunePublishedOutbox = async () => {
+  try {
+    const pruned = await OutboxRepository.deletePublishedOutboxBefore(config.outbox.retention);
+
+    if (pruned > 0) {
+      logger.debug(
+        {
+          event: 'scheduler.outbox.pruned',
+          schedulerId: config.scheduler.id,
+          count: pruned,
+        },
+        'PUBLISHED OUTBOX ROWS PRUNED',
+      );
+    }
+  } catch (error) {
+    logger.error(
+      {
+        event: 'scheduler.outbox_prune.failed',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'SCHEDULER OUTBOX PRUNE FAILED',
+    );
+  }
+};
+
 // Refreshes the BullMQ depth gauges. Failures here must never break the tick.
 const updateQueueMetrics = async () => {
   try {
@@ -197,13 +225,14 @@ export const processPendingOutbox = async () => {
     return 0;
   } finally {
     await updateOutboxMetrics();
+    await prunePublishedOutbox();
   }
 };
 
 // Resets idempotency records stuck in PROCESSING past the timeout so they can be retried.
 const processStaleIdempotency = async () => {
   try {
-    const timeout = config.idempotemcy.processingTimeout;
+    const timeout = config.idempotency.processingTimeout;
 
     const staleRecords = await IdempotencyRepository.getStaleProcessingRecords(timeout);
 
@@ -326,6 +355,10 @@ let schedulerInterval: NodeJS.Timeout | undefined;
 
 let lastReconciliationAt = 0;
 
+// Overlapping ticks duplicate every DB/Redis scan and skew the tick-duration
+// histogram, and setInterval does not wait for the previous async tick.
+let tickInFlight = false;
+
 // Requeues QUEUED jobs/executions missing from BullMQ. Throttled to the
 // reconciliation interval so it runs less often than the main scheduler tick.
 const processQueueReconciliation = async () => {
@@ -348,39 +381,58 @@ export const startScheduler = () => {
     'SCHEDULER STARTED',
   );
 
-  // Runs one scheduler pass over due jobs, due executions, outbox, stale idempotency, and expired leases.
-  const runTick = async () => {
-    logger.info(
+  // Run once immediately instead of waiting for the first interval.
+  void runSchedulerTick();
+
+  // Continue checking sequentially. A tick that outlives the interval is
+  // skipped, not stacked on top of the running one.
+  schedulerInterval = setInterval(() => {
+    void runSchedulerTick();
+  }, config.scheduler.intervalSize);
+};
+
+// Runs one scheduler pass over due jobs, due executions, outbox, stale idempotency, and expired leases.
+// Returns false when the previous tick is still running.
+export const runSchedulerTick = async (): Promise<boolean> => {
+  if (tickInFlight) {
+    logger.warn(
       {
-        event: 'scheduler.tick',
+        event: 'scheduler.tick_skipped',
         schedulerId: config.scheduler.id,
       },
-      'SCHEDULER TICK',
+      'SCHEDULER TICK SKIPPED, PREVIOUS TICK STILL RUNNING',
     );
 
-    const endTimer = schedulerTickDurationSeconds.startTimer();
+    return false;
+  }
 
-    try {
-      await processDueJobs();
-      await processDueExecutions();
-      await processPendingOutbox();
-      await processStaleIdempotency();
-      await processExpiredLeases();
-      await updateQueueMetrics();
-      await processQueueReconciliation();
-    } finally {
-      endTimer();
-      schedulerLastTickTimestampSeconds.set(Date.now() / 1000);
-    }
-  };
+  tickInFlight = true;
 
-  // Run once immediately instead of waiting for the first interval.
-  void runTick();
+  logger.info(
+    {
+      event: 'scheduler.tick',
+      schedulerId: config.scheduler.id,
+    },
+    'SCHEDULER TICK',
+  );
 
-  // Continue checking sequentially.
-  schedulerInterval = setInterval(() => {
-    void runTick();
-  }, config.scheduler.intervalSize);
+  const endTimer = schedulerTickDurationSeconds.startTimer();
+
+  try {
+    await processDueJobs();
+    await processDueExecutions();
+    await processPendingOutbox();
+    await processStaleIdempotency();
+    await processExpiredLeases();
+    await updateQueueMetrics();
+    await processQueueReconciliation();
+  } finally {
+    endTimer();
+    schedulerLastTickTimestampSeconds.set(Date.now() / 1000);
+    tickInFlight = false;
+  }
+
+  return true;
 };
 
 // Stops the scheduler tick loop.

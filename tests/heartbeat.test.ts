@@ -148,11 +148,28 @@ describe('Heartbeat and expiration detection', () => {
   it('an unrenewed lease expires and is detected', async () => {
     const executionId = await createExecution();
 
-    // Short lease, heartbeat never started: simulated worker death.
+    // Short lease, heartbeat never started: simulated worker death while the
+    // attempt was running.
     await acquireExecutionLease(executionId, 'worker-a', 300);
+    await pool.query(`UPDATE executions SET status = 'RUNNING', started_at = NOW() WHERE id = $1`, [
+      executionId,
+    ]);
     await sleep(500);
 
     const expired = await findExpiredLeases();
     expect(expired.map((lease) => lease.execution_id)).toContain(executionId);
+  });
+
+  it('does not report the lease of an attempt that never started running', async () => {
+    const executionId = await createExecution();
+
+    // The worker died between acquiring the lease and starting the attempt.
+    // Recovery only owns RUNNING executions; a QUEUED row is reconciliation's
+    // job, so it must not show up as an expired lease on every tick.
+    await acquireExecutionLease(executionId, 'worker-a', 300);
+    await sleep(500);
+
+    const expired = await findExpiredLeases();
+    expect(expired.map((lease) => lease.execution_id)).not.toContain(executionId);
   });
 });

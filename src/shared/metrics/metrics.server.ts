@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { register } from './registry.js';
+import { logger } from '../logger/logger.js';
 
 export function startMetricsServer(port: number) {
   const server = createServer(async (req, res) => {
@@ -25,8 +26,18 @@ export function startMetricsServer(port: number) {
     res.end('Not Found');
   });
 
+  // A port collision (for example a second worker started with the same
+  // metrics port) must be reported, not thrown as an unhandled 'error' event
+  // that kills the whole process.
+  server.on('error', (error) => {
+    logger.error(
+      { event: 'metrics.server.error', port, error },
+      'METRICS SERVER FAILED TO START',
+    );
+  });
+
   server.listen(port, () => {
-    console.log(`Metrics server running on port ${port}`);
+    logger.info({ event: 'metrics.server.started', port }, 'METRICS SERVER STARTED');
   });
 
   return server;

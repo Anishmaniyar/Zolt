@@ -5,6 +5,7 @@ import {
   getQueueExecution,
   getQueueJob,
   isQueueEntryRunnable,
+  removeTerminalQueueEntry,
 } from '../../infrastructure/queue/queue.js';
 import { config } from '../../config/env.config.js';
 import { logger } from '../../shared/logger/logger.js';
@@ -31,6 +32,10 @@ export const processQueueReconciliation = async () => {
         const runnable = await isQueueEntryRunnable(entry);
 
         if (runnable) continue;
+
+        // A retained terminal entry occupies the deterministic id, so the
+        // re-enqueue below would be a silent no-op. Remove it first.
+        await removeTerminalQueueEntry(entry);
 
         logger.warn(
           {
@@ -63,6 +68,8 @@ export const processQueueReconciliation = async () => {
         const runnable = await isQueueEntryRunnable(entry);
 
         if (runnable) continue;
+
+        await removeTerminalQueueEntry(entry);
 
         logger.warn(
           {
