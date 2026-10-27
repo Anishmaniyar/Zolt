@@ -11,6 +11,10 @@ import { logger } from '../../shared/logger/logger.js';
 import { config } from '../../config/env.config.js';
 import { registerExecution, unregisterExecution } from '../../workers/heartbeat.js';
 import { jobsTotalFinalState } from '../../shared/metrics/jobs.metrics.js';
+import {
+  observeExecutionDuration,
+  recordExecutionRetry,
+} from '../../shared/metrics/execution.metrics.js';
 
 export type JobType = keyof typeof handlerRegistry;
 
@@ -135,9 +139,22 @@ export const executeExistingExecution = async (
     try {
       await client.query('BEGIN');
 
-      await ExecutionRepository.successExecution(client, execution.id);
+      const completedExecution = await ExecutionRepository.successExecution(client, execution.id);
+
+      const completedJob = await JobRepository.successJob(client, job.id);
 
       await client.query('COMMIT');
+
+      observeExecutionDuration(
+        job.type,
+        completedExecution.status,
+        completedExecution.started_at,
+        completedExecution.completed_at,
+      );
+
+      if (completedJob) {
+        jobsTotalFinalState.labels(job.type, job.schedule_type, 'COMPLETED').inc();
+      }
 
       unregisterExecution(execution.id);
 
@@ -182,11 +199,22 @@ export const executeExistingExecution = async (
     try {
       await noHandlerClient.query('BEGIN');
 
-      await ExecutionRepository.failedExecution(noHandlerClient, execution.id, errorMessage);
+      const failedExecution = await ExecutionRepository.failedExecution(
+        noHandlerClient,
+        execution.id,
+        errorMessage,
+      );
 
       noHandlerResult = await JobRepository.failedJob(noHandlerClient, job.id);
 
       await noHandlerClient.query('COMMIT');
+
+      observeExecutionDuration(
+        job.type,
+        failedExecution.status,
+        failedExecution.started_at,
+        failedExecution.completed_at,
+      );
 
       if (noHandlerResult) {
         jobsTotalFinalState.labels(job.type, job.schedule_type, 'FAILED').inc();
@@ -249,7 +277,10 @@ export const executeExistingExecution = async (
         try {
           await retryTimeoutClient.query('BEGIN');
 
-          await ExecutionRepository.timedOutExecution(retryTimeoutClient, execution.id);
+          const timedOutExecution = await ExecutionRepository.timedOutExecution(
+            retryTimeoutClient,
+            execution.id,
+          );
 
           await IdempotencyRepository.resetToPending(retryTimeoutClient, idempotencyKey);
 
@@ -270,6 +301,15 @@ export const executeExistingExecution = async (
           }
 
           await retryTimeoutClient.query('COMMIT');
+
+          observeExecutionDuration(
+            job.type,
+            timedOutExecution.status,
+            timedOutExecution.started_at,
+            timedOutExecution.completed_at,
+          );
+
+          recordExecutionRetry(job.type);
 
           logger.warn(
             {
@@ -312,11 +352,21 @@ export const executeExistingExecution = async (
       try {
         await client.query('BEGIN');
 
-        await ExecutionRepository.timedOutExecution(client, execution.id);
+        const timedOutExecution = await ExecutionRepository.timedOutExecution(
+          client,
+          execution.id,
+        );
 
         const result = await JobRepository.failedJob(client, job.id);
 
         await client.query('COMMIT');
+
+        observeExecutionDuration(
+          job.type,
+          timedOutExecution.status,
+          timedOutExecution.started_at,
+          timedOutExecution.completed_at,
+        );
 
         if (result) {
           jobsTotalFinalState.labels(job.type, job.schedule_type, 'FAILED').inc();
@@ -393,6 +443,15 @@ export const executeExistingExecution = async (
 
         await retryClient.query('COMMIT');
 
+        observeExecutionDuration(
+          job.type,
+          execution2.status,
+          execution2.started_at,
+          execution2.completed_at,
+        );
+
+        recordExecutionRetry(job.type);
+
         logger.error(
           {
             event: 'execution.failed',
@@ -446,6 +505,13 @@ export const executeExistingExecution = async (
       const result = await JobRepository.failedJob(finalFailureClient, job.id);
 
       await finalFailureClient.query('COMMIT');
+
+      observeExecutionDuration(
+        job.type,
+        execution2.status,
+        execution2.started_at,
+        execution2.completed_at,
+      );
 
       if (result) {
         jobsTotalFinalState.labels(job.type, job.schedule_type, 'FAILED').inc();
@@ -503,6 +569,13 @@ export const executeExistingExecution = async (
     const result = await JobRepository.successJob(client, job.id);
 
     await client.query('COMMIT');
+
+    observeExecutionDuration(
+      job.type,
+      execution3.status,
+      execution3.started_at,
+      execution3.completed_at,
+    );
 
     if (result) {
       jobsTotalFinalState.labels(job.type, job.schedule_type, 'COMPLETED').inc();
@@ -597,6 +670,13 @@ export const recoverExpiredExecution = async (executionId: string) => {
 
       if (result) {
         jobsTotalFinalState.labels(result.type, result.schedule_type, 'COMPLETED').inc();
+
+        observeExecutionDuration(
+          result.type,
+          execution2.status,
+          execution2.started_at,
+          execution2.completed_at,
+        );
       }
 
       logger.info(
@@ -669,6 +749,17 @@ export const recoverExpiredExecution = async (executionId: string) => {
     await OutboxRepository.createExecutionOutbox(client, newExecution.id);
 
     await client.query('COMMIT');
+
+    if (crashed.job_type) {
+      observeExecutionDuration(
+        crashed.job_type,
+        crashed.status,
+        crashed.started_at,
+        crashed.completed_at,
+      );
+
+      recordExecutionRetry(crashed.job_type);
+    }
 
     logger.warn(
       {

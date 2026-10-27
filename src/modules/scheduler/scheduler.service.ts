@@ -1,5 +1,9 @@
 import * as SchedulerRepository from './scheduler.repository.js';
-import { enqueueJobs, enqueueExecutions } from '../../infrastructure/queue/queue.js';
+import {
+  enqueueJobs,
+  enqueueExecutions,
+  getQueueJobCounts,
+} from '../../infrastructure/queue/queue.js';
 import { config } from '../../config/env.config.js';
 import * as OutboxRepository from '../outbox/outbox.repository.js';
 import * as IdempotencyRepository from '../idempotency/idempotency.repository.js';
@@ -7,6 +11,15 @@ import * as LeaseRepository from '../leases/leases.repository.js';
 import * as ExecutionService from '../executions/execution.service.js';
 import * as ReconciliationService from '../queue-reconciliation/queue-reconciliation.service.js';
 import { logger } from '../../shared/logger/logger.js';
+import {
+  schedulerTickDurationSeconds,
+  schedulerLastTickTimestampSeconds,
+  queueJobs,
+} from '../../shared/metrics/scheduler.metrics.js';
+import {
+  outboxPending,
+  outboxOldestPendingAgeSeconds,
+} from '../../shared/metrics/outbox.metrics.js';
 
 // Claims jobs whose scheduled time has arrived and prepares them for queueing.
 const processDueJobs = async () => {
@@ -81,6 +94,50 @@ const processDueExecutions = async () => {
   }
 };
 
+// Refreshes the outbox backlog gauges from the database.
+// Failures here must never break the scheduler tick.
+const updateOutboxMetrics = async () => {
+  try {
+    const stats = await OutboxRepository.getPendingOutboxStats();
+
+    outboxPending.set(stats.count);
+    outboxOldestPendingAgeSeconds.set(
+      stats.oldest_created_at
+        ? Math.max(0, (Date.now() - new Date(stats.oldest_created_at).getTime()) / 1000)
+        : 0,
+    );
+  } catch (error) {
+    logger.error(
+      {
+        event: 'scheduler.outbox_metrics.failed',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'SCHEDULER OUTBOX METRICS FAILED',
+    );
+  }
+};
+
+// Refreshes the BullMQ depth gauges. Failures here must never break the tick.
+const updateQueueMetrics = async () => {
+  try {
+    const counts = await getQueueJobCounts();
+
+    for (const state of ['waiting', 'active', 'delayed', 'failed'] as const) {
+      queueJobs.labels(state).set(counts[state] ?? 0);
+    }
+  } catch (error) {
+    logger.error(
+      {
+        event: 'scheduler.queue_metrics.failed',
+        schedulerId: config.scheduler.id,
+        error,
+      },
+      'SCHEDULER QUEUE METRICS FAILED',
+    );
+  }
+};
+
 // Publishes claimed outbox rows to BullMQ.
 // This is the sole place that enqueues jobs and executions to BullMQ.
 export const processPendingOutbox = async () => {
@@ -138,6 +195,8 @@ export const processPendingOutbox = async () => {
     );
 
     return 0;
+  } finally {
+    await updateOutboxMetrics();
   }
 };
 
@@ -299,12 +358,20 @@ export const startScheduler = () => {
       'SCHEDULER TICK',
     );
 
-    await processDueJobs();
-    await processDueExecutions();
-    await processPendingOutbox();
-    await processStaleIdempotency();
-    await processExpiredLeases();
-    await processQueueReconciliation();
+    const endTimer = schedulerTickDurationSeconds.startTimer();
+
+    try {
+      await processDueJobs();
+      await processDueExecutions();
+      await processPendingOutbox();
+      await processStaleIdempotency();
+      await processExpiredLeases();
+      await updateQueueMetrics();
+      await processQueueReconciliation();
+    } finally {
+      endTimer();
+      schedulerLastTickTimestampSeconds.set(Date.now() / 1000);
+    }
   };
 
   // Run once immediately instead of waiting for the first interval.

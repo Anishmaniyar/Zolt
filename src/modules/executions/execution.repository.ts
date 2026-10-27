@@ -184,7 +184,8 @@ export const markWorkerCrashed = async (client: PoolClient, executionId: string)
         completed_at = NOW()
       WHERE id = $1
         AND status = 'RUNNING'
-      RETURNING *;
+      RETURNING *,
+        (SELECT type FROM jobs WHERE jobs.id = executions.job_id) AS job_type;
     `,
     [executionId],
   );

@@ -4,7 +4,7 @@
   "description": "",
   "main": "src/app/server.js",
   "scripts": {
-    "lint": "eslint src/** /*.ts",
+    "lint": "eslint src",
     "format": "prettier --write \"src/**/*.ts\"",
     "dev": "nodemon --exec tsx src/app/server.ts",
     "dev:api": "nodemon --exec tsx src/app/server.ts",
@@ -29,6 +29,7 @@
     "@types/node": "^26.5.1",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
+    "@typescript/native": "npm:typescript@7.0.2",
     "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
     "express": "^5.2.1",
@@ -37,7 +38,8 @@
     "prettier": "^3.9.6",
     "supertest": "^7.2.2",
     "tsx": "^4.23.13",
-    "typescript": "^7.0.2",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript-eslint": "^8.72.0",
     "vitest": "^5.0.1"
   },
   "dependencies": {

@@ -3,7 +3,7 @@ import { validateRequest } from '../../middleware/validate.middleware.js';
 import * as JobSchema from './job.schema.js';
 import * as JobController from './jobs.controller.js';
 
-const jobRouter = Router();
+const jobRouter: Router = Router();
 
 jobRouter.post(
   '/jobs',

@@ -97,8 +97,8 @@ async function startServer(): Promise<void> {
       'SERVER STARTED',
     );
 
-    process.on('SIGTERM', () => void shutdown(httpServer, 'SIGTERM'));
-    process.on('SIGINT', () => void shutdown(httpServer, 'SIGINT'));
+    process.on('SIGTERM', () => void shutdown(httpServer, 'SIGTERM', metricServer));
+    process.on('SIGINT', () => void shutdown(httpServer, 'SIGINT', metricServer));
   } catch (error) {
     logger.error({ event: 'server.start_failed', error }, 'SERVER START FAILED');
 

@@ -12,6 +12,7 @@ import {
   stopHeartbeat,
   unregisterExecution,
 } from '../src/workers/heartbeat.js';
+import { workerActiveExecutions } from '../src/shared/metrics/worker.metrics.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -45,6 +46,12 @@ describe('Heartbeat and expiration detection', () => {
   const track = (executionId: string, workerId: string) => {
     registerExecution(executionId, workerId);
     registeredExecutionIds.push(executionId);
+  };
+
+  const getActiveCount = async () => {
+    const { values } = await workerActiveExecutions.get();
+
+    return values[0]?.value ?? 0;
   };
 
   afterEach(async () => {
@@ -119,6 +126,23 @@ describe('Heartbeat and expiration detection', () => {
 
     const after = (await findLeaseByExecutionId(executionId)).lease_expires_at;
     expect(new Date(after).getTime()).toBe(new Date(snapshot).getTime());
+  });
+
+  it('active execution gauge follows registration exactly once', async () => {
+    const executionId = await createExecution();
+    const before = await getActiveCount();
+
+    track(executionId, 'worker-a');
+    expect(await getActiveCount()).toBe(before + 1);
+
+    // Re-registering the same execution must not double count.
+    registerExecution(executionId, 'worker-a');
+    expect(await getActiveCount()).toBe(before + 1);
+
+    unregisterExecution(executionId);
+    registeredExecutionIds.splice(registeredExecutionIds.indexOf(executionId), 1);
+
+    expect(await getActiveCount()).toBe(before);
   });
 
   it('an unrenewed lease expires and is detected', async () => {

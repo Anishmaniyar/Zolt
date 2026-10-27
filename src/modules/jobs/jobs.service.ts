@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import AppError from '../../shared/errors/appError.js';
 import * as JobRepository from './jobs.repository.js';
 import type { GetJobsQuery } from './jobs.types.js';
-import { jobsTotal } from '../../shared/metrics/jobs.metrics.js';
+import { jobsTotal, jobsTotalFinalState } from '../../shared/metrics/jobs.metrics.js';
 
 // Creates a job with a fresh idempotency key, resolving its run time from the schedule type.
 export const createJobService = async (data: {
@@ -86,6 +86,8 @@ export const cancelJobService = async (data: { id: string }) => {
   if (!cancelledJob) {
     throw new AppError('Job could not be cancelled', 409);
   }
+
+  jobsTotalFinalState.labels(cancelledJob.type, cancelledJob.schedule_type, 'CANCELLED').inc();
 
   return cancelledJob;
 };

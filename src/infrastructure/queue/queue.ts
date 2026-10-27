@@ -94,6 +94,11 @@ export async function enqueueExecutions(executions: Array<{ id: string }>) {
   }
 }
 
+// Returns the number of jobs in each observable queue state.
+export async function getQueueJobCounts() {
+  return jobQueue.getJobCounts('waiting', 'active', 'delayed', 'failed');
+}
+
 // Finds a BullMQ job for a DB job ID using its deterministic queue ID.
 export async function getQueueJob(jobId: string): Promise<Job | null> {
   const job = await jobQueue.getJob(getJobQueueId(jobId));

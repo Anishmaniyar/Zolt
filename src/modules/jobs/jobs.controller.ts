@@ -7,7 +7,7 @@ import { logger } from '../../shared/logger/logger.js';
 
 // Handles POST /jobs by creating a new job.
 export const createJobController = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const result = await JobService.createJobService(req.body);
 
     logger.info(
@@ -33,7 +33,7 @@ export const createJobController = asyncHandler(
 
 // Handles GET /jobs/:id by returning a single job.
 export const getJobByIdController = asyncHandler(
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const { id } = req.params;
 
     const result = await JobService.getJobByIdService({ id: id as string });

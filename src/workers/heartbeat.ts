@@ -1,6 +1,7 @@
 import { config } from '../config/env.config.js';
 import { logger } from '../shared/logger/logger.js';
 import { renewLease } from '../modules/leases/leases.repository.js';
+import { workerActiveExecutions } from '../shared/metrics/worker.metrics.js';
 
 // Worker-local set of executions this worker currently owns.
 // executionId -> workerId that acquired it.
@@ -13,12 +14,20 @@ export const registerExecution = (
   executionId: string,
   workerId: string = config.worker.id,
 ) => {
+  const alreadyTracked = activeExecutions.has(executionId);
+
   activeExecutions.set(executionId, workerId);
+
+  if (!alreadyTracked) {
+    workerActiveExecutions.inc();
+  }
 };
 
 // Stops tracking an execution so its lease is no longer renewed.
 export const unregisterExecution = (executionId: string) => {
-  activeExecutions.delete(executionId);
+  if (activeExecutions.delete(executionId)) {
+    workerActiveExecutions.dec();
+  }
 };
 
 // Periodically renews the leases of executions currently being handled by this worker.
@@ -37,7 +46,7 @@ const renewActiveLeases = async () => {
           'EXECUTION LEASE RENEWAL FAILED',
         );
 
-        activeExecutions.delete(executionId);
+        unregisterExecution(executionId);
       } else {
         logger.debug(
           {

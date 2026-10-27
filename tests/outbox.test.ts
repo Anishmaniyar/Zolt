@@ -6,12 +6,17 @@ const queueMocks = vi.hoisted(() => ({
   getQueueJob: vi.fn(),
   getQueueExecution: vi.fn(),
   isQueueEntryRunnable: vi.fn(),
+  getQueueJobCounts: vi.fn(),
 }));
 
 vi.mock('../src/infrastructure/queue/queue.js', () => queueMocks);
 
 import { pool } from '../src/infrastructure/database/pool.js';
 import { processPendingOutbox } from '../src/modules/scheduler/scheduler.service.js';
+import {
+  outboxPending,
+  outboxOldestPendingAgeSeconds,
+} from '../src/shared/metrics/outbox.metrics.js';
 
 describe('Outbox publish failure recovery', () => {
   const createdJobIds: string[] = [];
@@ -61,6 +66,11 @@ describe('Outbox publish failure recovery', () => {
     return result.rows[0];
   };
 
+  const getOutboxPending = async () => (await outboxPending.get()).values[0]?.value ?? 0;
+
+  const getOutboxOldestAge = async () =>
+    (await outboxOldestPendingAgeSeconds.get()).values[0]?.value ?? 0;
+
   beforeEach(() => {
     queueMocks.enqueueJobs.mockReset();
     queueMocks.enqueueExecutions.mockReset();
@@ -100,6 +110,18 @@ describe('Outbox publish failure recovery', () => {
     const outbox = await getOutbox(outboxId);
     expect(outbox.status).toBe('PENDING');
     expect(outbox.published_at).toBeNull();
+  });
+
+  it('outbox gauges reflect the pending backlog', async () => {
+    const jobId = await createJob();
+    await createJobOutbox(jobId);
+
+    queueMocks.enqueueJobs.mockRejectedValueOnce(new Error('Redis down'));
+
+    await processPendingOutbox();
+
+    expect(await getOutboxPending()).toBeGreaterThanOrEqual(1);
+    expect(await getOutboxOldestAge()).toBeGreaterThanOrEqual(0);
   });
 
   it('execution outbox stays PENDING when the BullMQ publish fails', async () => {

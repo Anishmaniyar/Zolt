@@ -56,6 +56,24 @@ export const claimPendingOutbox = async (limit: number) => {
   return result.rows;
 };
 
+// Returns the current PENDING backlog and the age of its oldest row.
+export const getPendingOutboxStats = async () => {
+  const result = await pool.query(
+    `
+      SELECT
+        COUNT(*)::int AS count,
+        MIN(created_at) AS oldest_created_at
+      FROM outbox
+      WHERE status = 'PENDING'
+    `,
+  );
+
+  return {
+    count: Number(result.rows[0]?.count ?? 0),
+    oldest_created_at: (result.rows[0]?.oldest_created_at ?? null) as Date | null,
+  };
+};
+
 // Returns claimed outbox rows to PENDING after a failed BullMQ enqueue so the next tick retries them.
 export const resetOutboxToPending = async (outboxIds: string[]) => {
   // Called only when the Redis enqueue AFTER the claim throws,

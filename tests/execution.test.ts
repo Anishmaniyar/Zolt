@@ -4,6 +4,10 @@ import { pool } from '../src/infrastructure/database/pool.js';
 import { executeExistingExecution } from '../src/modules/executions/execution.service.js';
 import { handlerRegistry } from '../src/handlers/handler.registry.js';
 import { jobsTotalFinalState } from '../src/shared/metrics/jobs.metrics.js';
+import {
+  executionDurationSeconds,
+  executionRetriesTotal,
+} from '../src/shared/metrics/execution.metrics.js';
 
 // Failure injection for the rollback tests. vi.mock factories are hoisted,
 // so flags live on globalThis instead of test-scope closures.
@@ -78,6 +82,27 @@ describe('Execution lifecycle and retry', () => {
           value.labels.schedule_type === 'ONCE' &&
           value.labels.status === status,
       );
+
+    return match?.value ?? 0;
+  };
+
+  const getExecutionDurationCount = async (status: string) => {
+    const { values } = await executionDurationSeconds.get();
+
+    const match = values.find(
+      (value) =>
+        value.metricName === 'zolt_execution_duration_seconds_count' &&
+        value.labels.type === 'SEND_EMAIL' &&
+        value.labels.status === status,
+    );
+
+    return match?.value ?? 0;
+  };
+
+  const getRetryCount = async () => {
+    const { values } = await executionRetriesTotal.get();
+
+    const match = values.find((value) => value.labels.type === 'SEND_EMAIL');
 
     return match?.value ?? 0;
   };
@@ -171,6 +196,7 @@ describe('Execution lifecycle and retry', () => {
 
   it('successful execution completes execution, job, and idempotency', async () => {
     const completedBefore = await getFinalStateCount('COMPLETED');
+    const durationBefore = await getExecutionDurationCount('COMPLETED');
     const { jobId, executionId, idempotencyKey } = await createFixture();
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockResolvedValue(undefined);
 
@@ -186,10 +212,46 @@ describe('Execution lifecycle and retry', () => {
 
     // Terminal success increments the final-state counter exactly once.
     expect(await getFinalStateCount('COMPLETED')).toBe(completedBefore + 1);
+
+    // One terminal attempt records exactly one COMPLETED duration.
+    expect(await getExecutionDurationCount('COMPLETED')).toBe(durationBefore + 1);
+  });
+
+  it('already-completed idempotency finalizes the execution and job without running the handler', async () => {
+    const completedBefore = await getFinalStateCount('COMPLETED');
+    const durationBefore = await getExecutionDurationCount('COMPLETED');
+    const { jobId, executionId, idempotencyKey } = await createFixture();
+
+    await pool.query(
+      `UPDATE idempotency_records
+       SET status = 'COMPLETED', processing_started_at = NULL
+       WHERE idempotency_key = $1`,
+      [idempotencyKey],
+    );
+
+    const handler = vi.spyOn(handlerRegistry, 'SEND_EMAIL');
+
+    const result = await executeExistingExecution(executionId);
+
+    expect(result).toBe(true);
+    expect(handler).not.toHaveBeenCalled();
+    expect((await getExecution(executionId)).status).toBe('COMPLETED');
+    expect((await getJob(jobId)).status).toBe('COMPLETED');
+
+    const idempotency = await getIdempotency(idempotencyKey);
+    expect(idempotency.status).toBe('COMPLETED');
+    expect(idempotency.processing_started_at).toBeNull();
+
+    // The job is still finalized exactly once, even though the attempt
+    // never started and therefore records no duration.
+    expect(await getFinalStateCount('COMPLETED')).toBe(completedBefore + 1);
+    expect(await getExecutionDurationCount('COMPLETED')).toBe(durationBefore);
   });
 
   it('handler failure with retry available fails execution 1 and schedules execution 2', async () => {
     const failedBefore = await getFinalStateCount('FAILED');
+    const retryBefore = await getRetryCount();
+    const durationBefore = await getExecutionDurationCount('FAILED');
     const { executionId, idempotencyKey } = await createFixture();
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockRejectedValue(
       new Error('Test handler failure'),
@@ -221,10 +283,16 @@ describe('Execution lifecycle and retry', () => {
 
     // A retryable failure is not a terminal job state.
     expect(await getFinalStateCount('FAILED')).toBe(failedBefore);
+
+    // The attempt itself is still counted, and exactly one retry was scheduled.
+    expect(await getExecutionDurationCount('FAILED')).toBe(durationBefore + 1);
+    expect(await getRetryCount()).toBe(retryBefore + 1);
   });
 
   it('handler failure with no retries remaining fails the job and creates nothing', async () => {
     const failedBefore = await getFinalStateCount('FAILED');
+    const retryBefore = await getRetryCount();
+    const durationBefore = await getExecutionDurationCount('FAILED');
     const { jobId, executionId, idempotencyKey } = await createFixture(1);
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockRejectedValue(
       new Error('Test handler failure'),
@@ -244,10 +312,15 @@ describe('Execution lifecycle and retry', () => {
 
     // Terminal failure increments the final-state counter exactly once.
     expect(await getFinalStateCount('FAILED')).toBe(failedBefore + 1);
+
+    // A terminal failure records duration but schedules no retry.
+    expect(await getExecutionDurationCount('FAILED')).toBe(durationBefore + 1);
+    expect(await getRetryCount()).toBe(retryBefore);
   });
 
   it('success transaction rollback commits nothing on mid-transaction failure', async () => {
     const completedBefore = await getFinalStateCount('COMPLETED');
+    const durationBefore = await getExecutionDurationCount('COMPLETED');
     const { jobId, executionId, idempotencyKey } = await createFixture();
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockResolvedValue(undefined);
     globalThis.__failSuccessJob = true;
@@ -268,9 +341,11 @@ describe('Execution lifecycle and retry', () => {
 
     // Rolled back success must not be counted.
     expect(await getFinalStateCount('COMPLETED')).toBe(completedBefore);
+    expect(await getExecutionDurationCount('COMPLETED')).toBe(durationBefore);
   });
 
   it('retry rollback leaves no orphan retry when retry creation fails', async () => {
+    const retryBefore = await getRetryCount();
     const { jobId, executionId, idempotencyKey } = await createFixture();
     vi.spyOn(handlerRegistry, 'SEND_EMAIL').mockRejectedValue(
       new Error('Test handler failure'),
@@ -288,6 +363,7 @@ describe('Execution lifecycle and retry', () => {
 
     // ...and no orphan retry execution was created.
     expect(await countExecutions(jobId)).toBe(1);
+    expect(await getRetryCount()).toBe(retryBefore);
   });
 
   // Handler that only rejects when the service aborts it on timeout.
@@ -310,6 +386,8 @@ describe('Execution lifecycle and retry', () => {
 
   it('timeout with retry available marks TIMED_OUT and schedules execution 2', async () => {
     const failedBefore = await getFinalStateCount('FAILED');
+    const retryBefore = await getRetryCount();
+    const durationBefore = await getExecutionDurationCount('TIMED_OUT');
     const { jobId, executionId, idempotencyKey } = await createFixture(2);
     mockTimeoutHandler();
 
@@ -340,10 +418,14 @@ describe('Execution lifecycle and retry', () => {
 
     // A retryable timeout is not a terminal job state.
     expect(await getFinalStateCount('FAILED')).toBe(failedBefore);
+    expect(await getExecutionDurationCount('TIMED_OUT')).toBe(durationBefore + 1);
+    expect(await getRetryCount()).toBe(retryBefore + 1);
   });
 
   it('timeout on final attempt marks TIMED_OUT and fails the job', async () => {
     const failedBefore = await getFinalStateCount('FAILED');
+    const retryBefore = await getRetryCount();
+    const durationBefore = await getExecutionDurationCount('TIMED_OUT');
     const { jobId, executionId } = await createFixture(1);
     mockTimeoutHandler();
 
@@ -356,6 +438,8 @@ describe('Execution lifecycle and retry', () => {
 
     // Terminal timeout increments the final-state counter exactly once.
     expect(await getFinalStateCount('FAILED')).toBe(failedBefore + 1);
+    expect(await getExecutionDurationCount('TIMED_OUT')).toBe(durationBefore + 1);
+    expect(await getRetryCount()).toBe(retryBefore);
   });
 
   it('timeout retry transaction rolls back when retry creation fails', async () => {
